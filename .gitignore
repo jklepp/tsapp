@@ -2,3 +2,5 @@ node_modules/
 dist/
 .env
 .env.*
+# orchestrator run output (ledgers, summaries, logs)
+.orchestrator/runs/

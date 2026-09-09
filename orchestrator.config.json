@@ -1,0 +1,23 @@
+{
+  "repoPath": ".",
+  "baseBranch": "main",
+  "integrationBranch": "integration",
+  "specsDir": ".orchestrator/prs",
+  "runsDir": ".orchestrator/runs",
+  "worktreesDir": "../tsapp-worktrees",
+  "checkCommand": "npm run check",
+  "coders": {
+    "count": 3,
+    "model": "claude-opus-5",
+    "effort": "high",
+    "maxTurns": 80,
+    "maxBudgetUsd": 5
+  },
+  "integrator": {
+    "model": "claude-opus-5",
+    "effort": "high",
+    "maxTurns": 40,
+    "maxBudgetUsd": 3
+  },
+  "maxAttemptsPerPr": 2
+}

@@ -1,0 +1,205 @@
+/**
+ * The coding agent.
+ *
+ * The model does the creative part only: read one spec, write the code and
+ * tests, run the checks, commit. Everything around it is deterministic code:
+ *
+ *   1. branch `pr/<id>` in its own worktree, cut from the integration branch
+ *      (or reused on a retry so the second attempt builds on the first)
+ *   2. one Agent SDK session, sandboxed to that worktree
+ *   3. gate: commits exist and the project's check command passes here, in the
+ *      harness, regardless of what the agent claimed
+ *   4. push and open a GitHub PR against integration when a remote exists
+ *   5. remove the worktree; the branch and a transcript remain
+ *
+ * Failures return feedback the next attempt reads from `pr.error`.
+ */
+import fs from "node:fs";
+import path from "node:path";
+import matter from "gray-matter";
+import type { OrchestratorConfig } from "../config.js";
+import {
+  addWorktree,
+  commitAll,
+  commitsAhead,
+  createPullRequest,
+  ensureBranch,
+  hasRemote,
+  isClean,
+  linkNodeModules,
+  push,
+  removeWorktree,
+  runCommand,
+  tail,
+} from "../git.js";
+import type { PrRecord } from "../state.js";
+import { runAgentSession, type SessionRunner } from "./session.js";
+import type { Coder, CoderResult } from "./types.js";
+
+export const branchFor = (prId: string) => `pr/${prId}`;
+
+export const CODER_RULES = `
+You are implementing exactly one pull request from the spec in the user message. You are working unattended in a dedicated git worktree on a branch of your own; nobody will answer questions.
+
+How to work:
+- Read the spec, then read only the files you need. Do not re-read files you have already seen.
+- Implement the spec and add or extend unit tests for the behaviour it describes.
+- Run the targeted test file while iterating. Run the full check command once at the end and fix whatever it reports.
+- Commit all changes with the message given in the spec. Do not push, do not open a PR, do not touch other branches.
+- Stay inside the spec: no unrelated refactors, no new dependencies unless the spec asks, no changes to files the spec does not concern.
+- Finish with a short summary (3 to 8 lines) of what changed and how it was tested. It becomes the PR description.
+- If the spec cannot be implemented as written, make no changes and reply with a single line starting with "BLOCKED:" and the reason.
+`.trim();
+
+export function buildCoderPrompt(
+  pr: PrRecord,
+  specBody: string,
+  config: OrchestratorConfig,
+  attempt: number,
+): string {
+  const parts = [
+    `# PR ${pr.id}: ${pr.title}`,
+    "",
+    `Commit message to use: \`${pr.id}: ${pr.title}\``,
+    `Full check command: \`${config.checkCommand}\``,
+    "",
+    "## Spec",
+    "",
+    specBody.trim(),
+  ];
+  if (attempt > 1 && pr.error) {
+    parts.push(
+      "",
+      `## Previous attempt (${attempt - 1}) failed`,
+      "",
+      "Your earlier commits on this branch are kept. Fix the problem below rather than starting over.",
+      "",
+      "```",
+      pr.error.trim(),
+      "```",
+    );
+  }
+  return parts.join("\n");
+}
+
+export function parseBlocked(finalText: string): string | undefined {
+  return finalText.match(/^BLOCKED:\s*(.+)$/m)?.[1]?.trim();
+}
+
+export interface CoderDeps {
+  runSession?: SessionRunner;
+}
+
+export function createCoder(deps: CoderDeps = {}): Coder {
+  const runSession = deps.runSession ?? runAgentSession;
+
+  return async (pr, ctx): Promise<CoderResult> => {
+    const { config, attempt } = ctx;
+    const repo = config.repoPath;
+    const branch = branchFor(pr.id);
+    const dir = path.join(config.worktreesDir, pr.id);
+    const logFile = path.join(
+      config.runsDir,
+      ctx.runId,
+      "logs",
+      `${pr.id}-attempt${attempt}-coder.log`,
+    );
+
+    await ensureBranch(repo, config.integrationBranch, config.baseBranch);
+    await addWorktree(
+      repo,
+      dir,
+      branch,
+      config.integrationBranch,
+      attempt === 1,
+    );
+    try {
+      if (config.linkNodeModules) linkNodeModules(repo, dir);
+      if (config.worktreeSetupCommand) {
+        const setup = await runCommand(
+          config.worktreeSetupCommand,
+          dir,
+          config.checkTimeoutMs,
+        );
+        if (!setup.ok) {
+          return {
+            outcome: "failed",
+            error: `worktree setup failed:\n${tail(setup.output)}`,
+          };
+        }
+      }
+
+      const specBody = matter(fs.readFileSync(pr.specPath, "utf8")).content;
+      const session = await runSession({
+        cwd: dir,
+        prompt: buildCoderPrompt(pr, specBody, config, attempt),
+        systemAppend: CODER_RULES,
+        settings: config.coders,
+        logFile,
+      });
+      const { metrics } = session;
+
+      if (session.result.subtype !== "success") {
+        const detail =
+          "errors" in session.result ? session.result.errors.join("; ") : "";
+        return {
+          outcome: "failed",
+          error: `agent session ended with ${session.result.subtype}${detail ? `: ${detail}` : ""}`,
+          metrics,
+        };
+      }
+      const blocked = parseBlocked(session.finalText);
+      if (blocked) {
+        return {
+          outcome: "failed",
+          error: `BLOCKED: ${blocked}`,
+          retryable: false,
+          metrics,
+        };
+      }
+
+      // Gate 1: the agent must have produced commits. Commit leftovers for it.
+      if (!(await isClean(dir))) {
+        await commitAll(dir, `${pr.id}: ${pr.title}`);
+      }
+      if ((await commitsAhead(dir, config.integrationBranch)) === 0) {
+        return {
+          outcome: "failed",
+          error: "the agent finished without making any changes",
+          metrics,
+        };
+      }
+
+      // Gate 2: the project's own checks, run by the harness, not the agent.
+      const check = await runCommand(
+        config.checkCommand,
+        dir,
+        config.checkTimeoutMs,
+      );
+      if (!check.ok) {
+        return {
+          outcome: "failed",
+          error: `check command failed (${config.checkCommand}):\n${tail(check.output)}`,
+          metrics,
+        };
+      }
+
+      let prUrl: string | undefined;
+      let prNumber: number | undefined;
+      if (config.openPullRequests && (await hasRemote(repo))) {
+        await push(dir, branch);
+        const created = await createPullRequest(dir, {
+          base: config.integrationBranch,
+          head: branch,
+          title: `${pr.id}: ${pr.title}`,
+          body: `${session.finalText.trim()}\n\nSpec: \`${path.relative(repo, pr.specPath)}\``,
+        });
+        prUrl = created.url;
+        prNumber = created.number;
+      }
+      return { outcome: "pr-open", branch, prUrl, prNumber, metrics };
+    } finally {
+      await removeWorktree(repo, dir);
+    }
+  };
+}
