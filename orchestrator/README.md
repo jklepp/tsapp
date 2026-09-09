@@ -168,6 +168,14 @@ one for integration; the summary adds them.
 Cost is the SDK's client-side estimate from a bundled price table. It is close
 to the bill but not the bill; the Claude Console usage page is authoritative.
 
+Two token totals appear in every summary. **Total tokens** is everything the
+model processed, and it grows with every turn because the whole context is
+re-read each time. **Billed tokens** is total minus cache reads, meaning the
+tokens charged at full rate rather than the 90% cache discount. Billed tokens
+is the number that responds to prompt and spec changes; total mostly tracks
+how many turns a PR took. The console table shows turns, both totals and
+cost; `summary.md` adds the input, output, cache-read and cache-write split.
+
 ## Files
 
 | File                       | Purpose                                                        |

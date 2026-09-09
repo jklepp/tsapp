@@ -100,26 +100,34 @@ describe("summarize + renderSummaryTable", () => {
     expect(s.rows.map((r) => r.id)).toEqual(["a", "b"]);
     expect(s.rows[1]).toMatchObject({
       totalMs: 3000,
+      numTurns: 3,
       totalTokens: 12,
+      billedTokens: 9, // excludes the 3 cache-read tokens
       costUsd: 0.03,
     });
-    expect(s.totals).toMatchObject({ totalMs: 7000, totalTokens: 28 });
+    expect(s.totals).toMatchObject({
+      totalMs: 7000,
+      numTurns: 7,
+      totalTokens: 28,
+      billedTokens: 21,
+    });
     const table = renderSummaryTable(s);
-    expect(table).toContain("| a | failed | 1 |");
+    expect(table).toContain("| a | failed | 1 | 4 |");
+    expect(table).toContain("| Cache rd |");
     expect(table).toContain("**total**");
 
     const lines = renderConsoleTable(s).split("\n");
     expect(lines).toHaveLength(6); // header, rule, a, b, rule, total
     expect(lines[0].startsWith("PR")).toBe(true);
+    expect(lines[0]).not.toContain("Cache rd");
     // Every line is padded to the same width, so columns line up.
     const widths = new Set(lines.map((l) => l.trimEnd().length));
     expect(widths.size).toBeLessThanOrEqual(2);
+    // PR  Status  Tries  Turns  Coding  Integr.  Total tok  Billed tok  Cost
     expect(lines[2]).toMatch(
-      /^a\s+failed\s+1\s+4s\s+0s\s+4\s+4\s+4\s+4\s+16\s+\$0\.0400$/,
+      /^a\s+failed\s+1\s+4\s+4s\s+0s\s+16\s+12\s+\$0\.0400$/,
     );
-    expect(lines[5]).toMatch(
-      /^total\s+6s\s+1s\s+7\s+7\s+7\s+7\s+28\s+\$0\.0700$/,
-    );
+    expect(lines[5]).toMatch(/^total\s+7\s+6s\s+1s\s+28\s+21\s+\$0\.0700$/);
   });
 });
 
