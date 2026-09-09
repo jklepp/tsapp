@@ -140,9 +140,13 @@ export function topologicalOrder(specs: PrSpec[]): PrSpec[] {
  * assuming every PR succeeds. The live scheduler (pickWave in graph.ts) applies
  * the same rules wave by wave, so this matches a real run when nothing fails.
  */
-export function previewWaves(specs: PrSpec[], concurrency: number): PrSpec[][] {
-  const remaining = topologicalOrder(specs);
-  const merged = new Set<string>();
+export function previewWaves(
+  specs: PrSpec[],
+  concurrency: number,
+  alreadyMerged: Iterable<string> = [],
+): PrSpec[][] {
+  const merged = new Set(alreadyMerged);
+  const remaining = topologicalOrder(specs).filter((s) => !merged.has(s.id));
   const waves: PrSpec[][] = [];
   while (remaining.length > 0) {
     const wave: PrSpec[] = [];

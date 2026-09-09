@@ -26,6 +26,7 @@ import {
   summarize,
 } from "./metrics.js";
 import {
+  alreadyMerged,
   getRunState,
   latestRunId,
   newRunId,
@@ -87,13 +88,26 @@ function validate(): boolean {
   return true;
 }
 
-function plan(): void {
+async function plan(): Promise<void> {
   if (!validate()) process.exitCode = 1;
   const specs = loadSpecs(config.specsDir);
+  const done = await alreadyMerged(config);
+  const merged = specs
+    .filter((s) => done.has(branchFor(s.id)))
+    .map((s) => s.id);
+  if (merged.length) {
+    console.log(
+      `\nAlready merged into ${config.integrationBranch}, will be skipped: ${merged.join(", ")}`,
+    );
+  }
   console.log("\nExecution order (dependencies first, then priority):");
-  topologicalOrder(specs).forEach((s, i) => console.log(`  ${i + 1}. ${s.id}`));
+  topologicalOrder(specs)
+    .filter((s) => !merged.includes(s.id))
+    .forEach((s, i) => console.log(`  ${i + 1}. ${s.id}`));
   console.log(`\nWave preview with ${config.coders.count} coder(s):`);
-  previewWaves(specs, config.coders.count).forEach((wave, i) =>
+  const waves = previewWaves(specs, config.coders.count, merged);
+  if (waves.length === 0) console.log("  nothing to do");
+  waves.forEach((wave, i) =>
     console.log(`  wave ${i + 1}: ${wave.map((s) => s.id).join(", ")}`),
   );
   console.log(

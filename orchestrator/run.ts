@@ -83,7 +83,9 @@ export function describeEvent(
 }
 
 /** Branch names already contained in the integration branch, if it exists. */
-async function alreadyMerged(config: OrchestratorConfig): Promise<Set<string>> {
+export async function alreadyMerged(
+  config: OrchestratorConfig,
+): Promise<Set<string>> {
   if (!(await branchExists(config.repoPath, config.integrationBranch))) {
     return new Set();
   }

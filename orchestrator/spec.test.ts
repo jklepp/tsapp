@@ -103,3 +103,17 @@ describe("previewWaves", () => {
     ]);
   });
 });
+
+describe("previewWaves with already merged specs", () => {
+  it("skips them and treats them as satisfied dependencies", () => {
+    const specs = [
+      spec("a"),
+      spec("b", { depends_on: ["a"] }),
+      spec("c", { depends_on: ["b"] }),
+    ];
+    expect(
+      previewWaves(specs, 3, ["a"]).map((w) => w.map((s) => s.id)),
+    ).toEqual([["b"], ["c"]]);
+    expect(previewWaves(specs, 3, ["a", "b", "c"])).toEqual([]);
+  });
+});
