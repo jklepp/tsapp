@@ -1,0 +1,3 @@
+# Normalise line endings so every checkout (including agent worktrees) is LF,
+# matching what prettier expects. Overrides core.autocrlf.
+* text=auto eol=lf
