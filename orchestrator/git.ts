@@ -112,12 +112,214 @@ export async function commitAll(cwd: string, message: string) {
 export async function push(
   cwd: string,
   branch: string,
-  opts: { remote?: string; force?: boolean } = {},
+  opts: {
+    remote?: string;
+    force?: boolean;
+    expectedRemote?: string | null;
+  } = {},
 ) {
-  const { remote = "origin", force = true } = opts;
+  const { remote = "origin", force = true, expectedRemote } = opts;
   const args = ["push", "-u", remote, branch];
-  if (force) args.splice(1, 0, "--force-with-lease");
+  if (expectedRemote !== undefined) {
+    // Pinned lease: succeed only if the remote branch is exactly where we
+    // last saw it (null = must not exist). A bare --force-with-lease would
+    // bless whatever a fresh fetch happened to bring in.
+    args.splice(1, 0, `--force-with-lease=${branch}:${expectedRemote ?? ""}`);
+  } else if (force) {
+    args.splice(1, 0, "--force-with-lease");
+  }
   await git(args, cwd);
+}
+
+export async function fetch(repo: string, remote = "origin") {
+  await git(["fetch", "--prune", remote], repo);
+}
+
+/** Sha of the remote-tracking ref, or undefined when the remote has no such branch. */
+export async function remoteSha(
+  repo: string,
+  branch: string,
+  remote = "origin",
+): Promise<string | undefined> {
+  try {
+    return await git(
+      ["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${branch}`],
+      repo,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** Worktree path that has `branch` checked out, if any. */
+export async function worktreeOf(
+  repo: string,
+  branch: string,
+): Promise<string | undefined> {
+  const out = await git(["worktree", "list", "--porcelain"], repo);
+  let current: string | undefined;
+  for (const line of out.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) current = line.slice("worktree ".length);
+    else if (line === `branch refs/heads/${branch}`) return current;
+  }
+  return undefined;
+}
+
+/**
+ * Move `branch` forward to `ref` if that is a fast-forward. Refuses when the
+ * branch is checked out in some other worktree (two writers) or has diverged.
+ */
+export async function fastForward(repo: string, branch: string, ref: string) {
+  const target = await git(["rev-parse", "--verify", ref], repo);
+  const current = await git(["rev-parse", "--verify", branch], repo);
+  if (current === target) return "unchanged" as const;
+  const ancestor = await isAncestor(repo, branch, ref);
+  if (!ancestor) {
+    throw new Error(
+      `${branch} has diverged from ${ref}; refusing to move it. Reconcile by hand.`,
+    );
+  }
+  const where = await worktreeOf(repo, branch);
+  if (where) {
+    const main = await git(["rev-parse", "--show-toplevel"], repo);
+    if (path.resolve(where) !== path.resolve(main)) {
+      throw new Error(
+        `${branch} is checked out in ${where}; refusing to fast-forward it from here.`,
+      );
+    }
+    await git(["merge", "--ff-only", ref], repo);
+  } else {
+    await git(["branch", "-f", branch, ref], repo);
+  }
+  return "moved" as const;
+}
+
+export async function isAncestor(repo: string, a: string, b: string) {
+  try {
+    await git(["merge-base", "--is-ancestor", a, b], repo);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Make sure `branch` exists locally: from the remote if it has one, else cut
+ * from `base`. With a remote, fast-forward to it. The one place every job
+ * starts from, so the integration branch is always the shared truth.
+ */
+export async function syncBranch(
+  repo: string,
+  branch: string,
+  base: string,
+  opts: { fetch: boolean; remote?: string } = { fetch: true },
+) {
+  const remote = opts.remote ?? "origin";
+  const haveRemote = await hasRemote(repo, remote);
+  if (haveRemote && opts.fetch) await fetch(repo, remote);
+  const upstream = haveRemote
+    ? await remoteSha(repo, branch, remote)
+    : undefined;
+  if (!(await branchExists(repo, branch))) {
+    // Prefer the remote's copy of the base: the owner's pushes are the truth.
+    const remoteBase =
+      haveRemote && (await remoteSha(repo, base, remote))
+        ? `${remote}/${base}`
+        : base;
+    await git(["branch", branch, upstream ?? remoteBase], repo);
+    return;
+  }
+  if (upstream && opts.fetch) {
+    await fastForward(repo, branch, `${remote}/${branch}`);
+  }
+}
+
+export async function deleteRemoteBranch(
+  repo: string,
+  branch: string,
+  remote = "origin",
+) {
+  await git(["push", remote, "--delete", branch], repo);
+}
+
+/** Ids recorded by `<key>: <id>` trailers on commits reachable from `ref`. */
+export async function trailerValues(
+  repo: string,
+  ref: string,
+  key: string,
+): Promise<Set<string>> {
+  const out = await git(
+    ["log", ref, `--format=%(trailers:key=${key},valueonly)`],
+    repo,
+  );
+  return new Set(
+    out
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean),
+  );
+}
+
+/**
+ * Squash-merge `branch` into the checked-out branch: the result is staged,
+ * not committed, so the caller adds the message and trailer. Conflicts are
+ * left in place for an agent, like merge().
+ */
+export async function squashMerge(
+  cwd: string,
+  branch: string,
+): Promise<MergeOutcome> {
+  try {
+    const out = await git(["merge", "--squash", branch], cwd);
+    if (/already up to date/i.test(out)) return { status: "up-to-date" };
+    return { status: "merged" };
+  } catch (err) {
+    const files = await unmergedFiles(cwd);
+    if (files.length) return { status: "conflict", files };
+    throw err;
+  }
+}
+
+export interface GhMergeOptions {
+  subject: string;
+  body: string;
+  /** The PR head must still be this sha, or GitHub refuses. */
+  matchHeadCommit: string;
+  deleteBranch: boolean;
+}
+
+/** Squash-merge a PR on GitHub so it shows as merged there. */
+export async function ghSquashMerge(
+  repo: string,
+  prNumber: number,
+  opts: GhMergeOptions,
+) {
+  const args = [
+    "pr",
+    "merge",
+    String(prNumber),
+    "--squash",
+    "--match-head-commit",
+    opts.matchHeadCommit,
+    "--subject",
+    opts.subject,
+    "--body",
+    opts.body,
+  ];
+  if (opts.deleteBranch) args.push("--delete-branch");
+  await execFileAsync("gh", args, { cwd: repo });
+}
+
+export async function ghClosePr(
+  repo: string,
+  prNumber: number,
+  comment: string,
+) {
+  await execFileAsync(
+    "gh",
+    ["pr", "close", String(prNumber), "--comment", comment],
+    { cwd: repo },
+  );
 }
 
 export async function revParse(cwd: string, ref = "HEAD") {
@@ -228,10 +430,16 @@ export function runCommand(
   command: string,
   cwd: string,
   timeoutMs: number,
+  env: Record<string, string> = {},
 ): Promise<CommandResult> {
   return new Promise((resolve) => {
     const chunks: string[] = [];
-    const child = spawn(command, { cwd, shell: true, windowsHide: true });
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      windowsHide: true,
+      env: { ...process.env, ...env },
+    });
     child.stdout.on("data", (d) => chunks.push(String(d)));
     child.stderr.on("data", (d) => chunks.push(String(d)));
     const timer = setTimeout(() => {

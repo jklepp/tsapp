@@ -8,11 +8,15 @@ import {
   addWorktree,
   commitAll,
   git,
+  push,
+  remoteSha,
   removeWorktree,
   revParse,
+  syncBranch,
   unmergedFiles,
 } from "../git";
-import { makeRepo } from "../testing";
+import { alreadyMerged } from "../run";
+import { makeRepo, makeRepoWithRemote } from "../testing";
 import type { PrRecord } from "../state";
 import { createIntegrator } from "./integrator";
 import type { SessionRequest, SessionRunner } from "./session";
@@ -228,5 +232,97 @@ describe("integrator", () => {
     if (result.outcome === "rejected")
       expect(result.error).toContain("checks fail after merging");
     expect(await revParse(repo, "integration")).toBe(before);
+  });
+});
+
+describe("integrator with a remote and squash strategy", () => {
+  it("lands a squash commit with the spec trailer, pushes, and is idempotent", async () => {
+    const { repo } = await makeRepoWithRemote();
+    const root = path.dirname(repo);
+    fs.writeFileSync(path.join(repo, "check.js"), "process.exit(0)");
+    fs.mkdirSync(path.join(repo, "specs"));
+    fs.writeFileSync(
+      path.join(repo, "specs", "s.md"),
+      "---\nid: s\ntitle: Squash me\n---\nbody\n",
+    );
+    await commitAll(repo, "seed");
+    await git(["push", "-q", "origin", "main"], repo);
+    const cfg = resolvePaths(
+      OrchestratorConfigSchema.parse({
+        repoPath: repo,
+        specsDir: path.join(repo, "specs"),
+        runsDir: path.join(root, "runs"),
+        worktreesDir: path.join(root, "wt"),
+        checkCommand: "node check.js",
+        linkNodeModules: false,
+        mergeStrategy: "squash",
+        openPullRequests: false, // no gh in tests
+        integrator: { checkCommand: "node check.js && node -e 0" },
+      }),
+      root,
+    );
+    // A PR branch with two commits, pushed like a coder would.
+    await syncBranch(repo, "integration", "main", { fetch: true });
+    const wt = path.join(root, "wt", "s");
+    await addWorktree(repo, wt, "pr/s", "integration", true);
+    fs.writeFileSync(path.join(wt, "one.txt"), "1\n");
+    await commitAll(wt, "s: one");
+    fs.writeFileSync(path.join(wt, "two.txt"), "2\n");
+    await commitAll(wt, "s: two");
+    await push(wt, "pr/s", { expectedRemote: null });
+    await removeWorktree(repo, wt);
+
+    const record: PrRecord = {
+      id: "s",
+      title: "Squash me",
+      specPath: path.join(repo, "specs", "s.md"),
+      priority: 3,
+      dependsOn: [],
+      touches: [],
+      status: "integrating",
+      attempts: 1,
+      branch: "pr/s",
+    };
+    const calls: SessionRequest[] = [];
+    const integrator = createIntegrator({
+      runSession: async (req) => {
+        calls.push(req);
+        throw new Error("no session expected");
+      },
+    });
+    const result = await integrator(record, {
+      config: cfg,
+      runId: "r",
+      attempt: 1,
+    });
+    expect(result.outcome).toBe("merged");
+    expect(calls).toHaveLength(0);
+
+    // One commit on integration, carrying both files and the trailer.
+    expect(await git(["rev-list", "--count", "main..integration"], repo)).toBe(
+      "1",
+    );
+    const msg = await git(["log", "-1", "--format=%B", "integration"], repo);
+    expect(msg).toContain("s: Squash me");
+    expect(msg).toContain("Orch-Spec: s");
+    expect(await git(["show", "integration:two.txt"], repo)).toBe("2");
+    // Pushed to the remote.
+    expect(await remoteSha(repo, "integration")).toBe(
+      await revParse(repo, "integration"),
+    );
+    // Trailer-based detection sees it; ancestry would not (squash).
+    expect(await alreadyMerged(cfg)).toEqual(new Set(["s"]));
+
+    // Running again is a no-op.
+    const again = await integrator(record, {
+      config: cfg,
+      runId: "r",
+      attempt: 2,
+    });
+    expect(again.outcome).toBe("merged");
+    expect(await git(["rev-list", "--count", "main..integration"], repo)).toBe(
+      "1",
+    );
+    fs.rmSync(root, { recursive: true, force: true });
   });
 });

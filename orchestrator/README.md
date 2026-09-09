@@ -63,7 +63,7 @@ PR failed immediately, because another attempt would only spend more tokens.
 Most merges need no model, so the harness tries the cheap path first:
 
 1. Fresh worktree on `integration`, note the current commit.
-2. `git merge --no-ff pr/<id>`. A clean merge goes straight to step 3. A
+2. `git merge --no-ff pr/<id>` (or `git merge --squash`, see `mergeStrategy`). A clean merge goes straight to step 3. A
    branch that is already in `integration` counts as merged, which makes
    retries after a crash safe. A conflict starts one model session in that
    worktree with the conflicted file list and the PR's spec, and the harness
@@ -107,10 +107,31 @@ the rest stay queued, and a later `run` picks them up.
 
 ## Re-running
 
-At the start of every run, any spec whose `pr/<id>` branch is already
-contained in `integration` is marked merged before scheduling. So the specs
-folder is a permanent record of what you asked for, and `run` after a crash,
-a partial failure, or adding new specs only builds what is missing.
+Every commit that lands a PR on `integration` carries a trailer line
+`Orch-Spec: <id>`. At the start of every run, specs whose id appears in a
+trailer on `integration` are marked merged before scheduling (older merge
+commits without the trailer are still recognised by branch ancestry). So the
+specs folder is a permanent record of what you asked for, and `run` after a
+crash, a partial failure, or adding new specs only builds what is missing.
+
+## Working with a remote
+
+When the repo has an `origin`, every coder and integrator job starts by
+fetching and fast-forwarding `integration` (`fetchBeforeWork`), so a branch
+cut for a PR always starts from the shared tip, and two machines cannot
+silently diverge. A fast-forward is refused if `integration` is checked out
+in another worktree, which is the guard for running the orchestrator next to
+a human's checkout. Pushes of PR branches use a lease pinned to the exact
+remote sha seen at worktree creation, so a retry can rewrite its own branch
+but can never overwrite someone else's push.
+
+`mergeStrategy` chooses how a PR lands. `merge` (default) is a `--no-ff`
+merge commit, and GitHub marks the PR merged by ancestry. `squash` lands one
+commit per PR: when the squash applied cleanly and a PR number is known, the
+integrator asks GitHub to do the squash (`gh pr merge --squash
+--match-head-commit`) so the PR shows as merged, then adopts that commit
+locally; if a conflict had to be resolved locally, it pushes its own squash
+commit and closes the PR with a note saying where it landed.
 
 ## Data flow
 

@@ -93,9 +93,7 @@ async function plan(): Promise<void> {
   if (!validate()) process.exitCode = 1;
   const specs = loadSpecs(config.specsDir);
   const done = await alreadyMerged(config);
-  const merged = specs
-    .filter((s) => done.has(branchFor(config, s.id)))
-    .map((s) => s.id);
+  const merged = specs.filter((s) => done.has(s.id)).map((s) => s.id);
   if (merged.length) {
     console.log(
       `\nAlready merged into ${config.integrationBranch}, will be skipped: ${merged.join(", ")}`,

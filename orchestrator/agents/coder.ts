@@ -9,7 +9,8 @@
  *   2. one Agent SDK session, sandboxed to that worktree
  *   3. gate: commits exist and the project's check command passes here, in the
  *      harness, regardless of what the agent claimed
- *   4. push and open a GitHub PR against integration when a remote exists
+ *   4. push (lease pinned to the sha we fetched, so nobody else's work is
+ *      overwritten) and open a GitHub PR against integration when a remote exists
  *   5. remove the worktree; the branch and a transcript remain
  *
  * Failures return feedback the next attempt reads from `pr.error`.
@@ -23,13 +24,14 @@ import {
   commitAll,
   commitsAhead,
   createPullRequest,
-  ensureBranch,
   hasRemote,
   isClean,
   linkNodeModules,
   push,
+  remoteSha,
   removeWorktree,
   runCommand,
+  syncBranch,
   tail,
 } from "../git.js";
 import { branchFor, worktreeDirFor } from "../naming.js";
@@ -106,7 +108,15 @@ export function createCoder(deps: CoderDeps = {}): Coder {
       `${pr.id}-attempt${attempt}-coder.log`,
     );
 
-    await ensureBranch(repo, config.integrationBranch, config.baseBranch);
+    // Start from the shared truth: fetch and fast-forward integration, and
+    // remember where the remote PR branch is so the push can be pinned to it.
+    await syncBranch(repo, config.integrationBranch, config.baseBranch, {
+      fetch: config.fetchBeforeWork,
+    });
+    const remote = await hasRemote(repo);
+    const expectedRemote = remote
+      ? ((await remoteSha(repo, branch)) ?? null)
+      : undefined;
     await addWorktree(
       repo,
       dir,
@@ -121,6 +131,12 @@ export function createCoder(deps: CoderDeps = {}): Coder {
           config.worktreeSetupCommand,
           dir,
           config.checkTimeoutMs,
+          {
+            ORCH_PR_ID: pr.id,
+            ORCH_BRANCH: branch,
+            ORCH_ATTEMPT: String(attempt),
+            ORCH_INTEGRATION_BRANCH: config.integrationBranch,
+          },
         );
         if (!setup.ok) {
           return {
@@ -187,8 +203,10 @@ export function createCoder(deps: CoderDeps = {}): Coder {
 
       let prUrl: string | undefined;
       let prNumber: number | undefined;
-      if (config.openPullRequests && (await hasRemote(repo))) {
-        await push(dir, branch);
+      if (remote) {
+        await push(dir, branch, { expectedRemote });
+      }
+      if (remote && config.openPullRequests) {
         const created = await createPullRequest(dir, {
           base: config.integrationBranch,
           head: branch,

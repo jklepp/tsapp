@@ -4,8 +4,8 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import { OrchestratorConfigSchema, resolvePaths } from "../config";
-import { branchExists, commitAll, commitsAhead, git } from "../git";
-import { makeRepo } from "../testing";
+import { branchExists, commitAll, commitsAhead, git, remoteSha } from "../git";
+import { cloneOf, makeRepo, makeRepoWithRemote } from "../testing";
 import type { PrRecord } from "../state";
 import { buildCoderPrompt, createCoder, parseBlocked } from "./coder";
 import type { SessionRequest, SessionRunner } from "./session";
@@ -258,6 +258,67 @@ describe("coder naming from config", () => {
     if (result.outcome === "pr-open") expect(result.branch).toBe("orch/n");
     expect(path.basename(seenDir)).toBe("orch-n");
     expect(await branchExists(repo, "orch/n")).toBe(true);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("coder with a remote", () => {
+  it("fast-forwards integration first, then pushes with a pinned lease", async () => {
+    const { repo, origin } = await makeRepoWithRemote();
+    const root = path.dirname(repo);
+    fs.writeFileSync(path.join(repo, "check.js"), "process.exit(0)");
+    fs.mkdirSync(path.join(repo, "specs"));
+    fs.writeFileSync(
+      path.join(repo, "specs", "r.md"),
+      "---\nid: r\ntitle: R\n---\nbody\n",
+    );
+    await commitAll(repo, "seed");
+    await git(["push", "-q", "origin", "main"], repo);
+    await git(["branch", "integration", "main"], repo);
+    await git(["push", "-q", "origin", "integration"], repo);
+    // Another writer moves integration on the remote.
+    const other = await cloneOf(origin, "other-coder");
+    await git(["checkout", "-q", "integration"], other);
+    fs.writeFileSync(path.join(other, "remote.txt"), "remote\n");
+    await commitAll(other, "remote change");
+    await git(["push", "-q", "origin", "integration"], other);
+
+    const cfg = resolvePaths(
+      OrchestratorConfigSchema.parse({
+        repoPath: repo,
+        specsDir: path.join(repo, "specs"),
+        runsDir: path.join(root, "runs"),
+        worktreesDir: path.join(root, "wt"),
+        checkCommand: "node check.js",
+        linkNodeModules: false,
+        openPullRequests: false,
+      }),
+      root,
+    );
+    let sawRemoteFile = false;
+    const coder = createCoder({
+      runSession: fakeSession(async (cwd) => {
+        sawRemoteFile = fs.existsSync(path.join(cwd, "remote.txt"));
+        fs.writeFileSync(path.join(cwd, "r.txt"), "r\n");
+        await commitAll(cwd, "r: done");
+      }),
+    });
+    const record: PrRecord = {
+      id: "r",
+      title: "R",
+      specPath: path.join(repo, "specs", "r.md"),
+      priority: 3,
+      dependsOn: [],
+      touches: [],
+      status: "coding",
+      attempts: 1,
+    };
+    const result = await coder(record, { config: cfg, runId: "r", attempt: 1 });
+    expect(result.outcome).toBe("pr-open");
+    expect(sawRemoteFile).toBe(true); // worktree was cut from the fetched tip
+    expect(await remoteSha(repo, "pr/r")).toBe(
+      await git(["rev-parse", "pr/r"], repo),
+    );
     fs.rmSync(root, { recursive: true, force: true });
   });
 });

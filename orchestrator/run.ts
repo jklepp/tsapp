@@ -12,9 +12,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 import type { Coder, Integrator } from "./agents/types.js";
-import { branchFor } from "./naming.js";
+import { SPEC_TRAILER, branchFor } from "./naming.js";
 import type { OrchestratorConfig } from "./config.js";
-import { branchExists, mergedBranches } from "./git.js";
+import { branchExists, mergedBranches, trailerValues } from "./git.js";
 import { buildGraph, recursionLimitFor } from "./graph.js";
 import { Ledger, summarize, writeSummary, type RunSummary } from "./metrics.js";
 import { loadSpecs, validateSpecs } from "./spec.js";
@@ -82,16 +82,23 @@ export function describeEvent(
   }
 }
 
-/** Branch names already contained in the integration branch, if it exists. */
+/**
+ * Spec ids already landed on the integration branch: every landing commit
+ * carries an `Orch-Spec` trailer, whatever the merge strategy. Merge-commit
+ * landings made before trailers existed are still recognised by ancestry.
+ */
 export async function alreadyMerged(
   config: OrchestratorConfig,
 ): Promise<Set<string>> {
-  if (!(await branchExists(config.repoPath, config.integrationBranch))) {
-    return new Set();
+  const { repoPath: repo, integrationBranch: target } = config;
+  if (!(await branchExists(repo, target))) return new Set();
+  const byTrailer = await trailerValues(repo, target, SPEC_TRAILER);
+  const byAncestry = await mergedBranches(repo, target);
+  const prefix = `${config.branchPrefix}/`;
+  for (const b of byAncestry) {
+    if (b.startsWith(prefix)) byTrailer.add(b.slice(prefix.length));
   }
-  return new Set(
-    await mergedBranches(config.repoPath, config.integrationBranch),
-  );
+  return byTrailer;
 }
 
 const checkpointFile = (config: OrchestratorConfig, runId: string) =>
@@ -161,9 +168,7 @@ export async function runOrchestrator(
   // what makes re-running after a crash or a partial failure safe.
   const prs = initialPrRecords(specs);
   const done = await alreadyMerged(config);
-  const skipped = specs
-    .filter((s) => done.has(branchFor(config, s.id)))
-    .map((s) => s.id);
+  const skipped = specs.filter((s) => done.has(s.id)).map((s) => s.id);
   for (const id of skipped) {
     prs[id] = { ...prs[id], status: "merged", branch: branchFor(config, id) };
   }
