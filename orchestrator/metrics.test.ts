@@ -125,9 +125,11 @@ describe("summarize + renderSummaryTable", () => {
     expect(widths.size).toBeLessThanOrEqual(2);
     // PR  Status  Tries  Turns  Coding  Integr.  Total tok  Billed tok  Cost
     expect(lines[2]).toMatch(
-      /^a\s+failed\s+1\s+4\s+4s\s+0s\s+16\s+12\s+\$0\.0400$/,
+      /^a\s+failed\s+1\s+4\s+4s\s+0s\s+0s\s+16\s+12\s+\$0\.0400$/,
     );
-    expect(lines[5]).toMatch(/^total\s+7\s+6s\s+1s\s+28\s+21\s+\$0\.0700$/);
+    expect(lines[5]).toMatch(
+      /^total\s+7\s+6s\s+0s\s+1s\s+28\s+21\s+\$0\.0700$/,
+    );
   });
 });
 

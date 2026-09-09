@@ -36,6 +36,7 @@ import {
   commitAll,
   deleteRemoteBranch,
   fetch,
+  ghAppendPrBody,
   ghClosePr,
   ghSquashMerge,
   hasRemote,
@@ -292,6 +293,14 @@ async function land(
 ) {
   const repo = config.repoPath;
   const target = config.integrationBranch;
+  // Review findings that did not stop the landing travel with the PR.
+  if (pr.reviewNotes && pr.prNumber !== undefined && config.openPullRequests) {
+    await ghAppendPrBody(
+      repo,
+      pr.prNumber,
+      `## Review notes (landed without a fix)\n\n${pr.reviewNotes}`,
+    );
+  }
   const serverSquash =
     config.mergeStrategy === "squash" &&
     pr.prNumber !== undefined &&

@@ -105,6 +105,23 @@ runaway agent. Per run, `maxRunBudgetUsd` (optional) stops the scheduler from
 starting new waves once the estimated total is reached; PRs in flight finish,
 the rest stay queued, and a later `run` picks them up.
 
+## Optional review stage
+
+Off by default. With `review.enabled`, a `review` node runs between coding
+and integration. Each reviewer in `review.reviewers` is a read-only session
+whose prompt is a markdown file you own (a Claude Code agent file with
+frontmatter works unmodified); the harness checks the PR branch out, writes
+the diff against `integration` to `runs/<id>/review/`, and asks each reviewer
+to end with `VERDICT: PASS` or `VERDICT: BLOCK`. `review.classifyCommand`, if
+set, prints `{"reviewers": [...]}` for the diff so only relevant reviewers
+run, and an empty list skips review entirely.
+
+A block sends the PR back to a coder with the findings as feedback, at most
+`review.maxRounds` times (default 1), and that round does not count against
+`maxAttemptsPerPr`. When rounds run out, `review.onExhausted` decides: land
+the PR with the findings appended to its GitHub body (default), or fail it.
+Review cost appears as its own column in the summary.
+
 ## Re-running
 
 Every commit that lands a PR on `integration` carries a trailer line

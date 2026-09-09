@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
-import type { Coder, Integrator } from "./agents/types.js";
+import type { Coder, Integrator, Reviewer } from "./agents/types.js";
 import { SPEC_TRAILER, branchFor } from "./naming.js";
 import type { OrchestratorConfig } from "./config.js";
 import { branchExists, mergedBranches, trailerValues } from "./git.js";
@@ -24,6 +24,8 @@ import { initialPrRecords, type PrRecord, type RunStateType } from "./state.js";
 export interface RunOptions {
   coder: Coder;
   integrator: Integrator;
+  /** Needed when `review.enabled`. */
+  reviewer?: Reviewer;
   runId?: string;
   /** Called with a one-line description of every event. */
   onLog?: (line: string) => void;
@@ -61,6 +63,14 @@ export function describeEvent(
       return `${pr}: PR open${data.prUrl ? ` ${data.prUrl}` : ""}`;
     case "pr:coder-failed":
       return `${pr}: coder failed, ${data.willRetry ? "will retry" : "giving up"}: ${data.error}`;
+    case "pr:reviewing":
+      return `${pr}: reviewing (round ${data.round})`;
+    case "pr:review-passed":
+      return `${pr}: review passed`;
+    case "pr:review-skipped":
+      return `${pr}: review skipped (${data.reason ?? "no reviewer selected"})`;
+    case "pr:review-blocked":
+      return `${pr}: review blocked, ${data.willRetry ? "back to a coder" : data.failed ? "giving up" : "landing with notes"}`;
     case "pr:integrating":
       return `${pr}: integrating`;
     case "pr:merged":
@@ -144,7 +154,13 @@ function setup(config: OrchestratorConfig, runId: string, opts: RunOptions) {
     checkpointFile(config, runId),
   );
   const graph = buildGraph(
-    { config, coder: opts.coder, integrator: opts.integrator, emit },
+    {
+      config,
+      coder: opts.coder,
+      integrator: opts.integrator,
+      reviewer: opts.reviewer,
+      emit,
+    },
     checkpointer,
   );
   // The SQLite handle must be closed explicitly, or the file stays locked.

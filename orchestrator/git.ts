@@ -461,3 +461,27 @@ export function runCommand(
 export function tail(output: string, lines = 40): string {
   return output.trim().split(/\r?\n/).slice(-lines).join("\n");
 }
+
+/** Append a section to a PR's body (used to carry review notes onto the PR). */
+export async function ghAppendPrBody(
+  repo: string,
+  prNumber: number,
+  section: string,
+) {
+  const { stdout } = await execFileAsync(
+    "gh",
+    ["pr", "view", String(prNumber), "--json", "body", "--jq", ".body"],
+    { cwd: repo },
+  );
+  const bodyFile = path.join(repo, ".pr-body.tmp.md");
+  fs.writeFileSync(bodyFile, `${stdout.trimEnd()}\n\n${section.trim()}\n`);
+  try {
+    await execFileAsync(
+      "gh",
+      ["pr", "edit", String(prNumber), "--body-file", bodyFile],
+      { cwd: repo },
+    );
+  } finally {
+    fs.rmSync(bodyFile, { force: true });
+  }
+}

@@ -17,12 +17,14 @@
  *   npm run orch -- watch [runId]       live view of a run from its ledger, redrawn
  *                    [--once]           each second until the run ends (or once)
  *   npm run orch -- ci                  run postMerge.command now (e.g. trigger heavy CI)
+ *   npm run orch -- review <id>         run the configured reviewers on pr/<id> (spends tokens)
  */
 import { query, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createCoder } from "./agents/coder.js";
 import { branchFor } from "./naming.js";
 import { createIntegrator } from "./agents/integrator.js";
-import { stubCoder, stubIntegrator } from "./agents/stub.js";
+import { createReviewer } from "./agents/reviewer.js";
+import { stubCoder, stubIntegrator, stubReviewer } from "./agents/stub.js";
 import { loadConfig } from "./config.js";
 import {
   phaseMetricsFromResult,
@@ -179,6 +181,7 @@ function selectAgents() {
     delayMs: 300,
     failOnce: listFlag("fail-once"),
     failAlways: listFlag("fail"),
+    reviewBlockOnce: listFlag("review-block-once"),
   };
   console.log(
     flags.stub
@@ -189,8 +192,16 @@ function selectAgents() {
             : ", no run budget."),
   );
   return flags.stub
-    ? { coder: stubCoder(stubOpts), integrator: stubIntegrator(stubOpts) }
-    : { coder: createCoder(), integrator: createIntegrator() };
+    ? {
+        coder: stubCoder(stubOpts),
+        integrator: stubIntegrator(stubOpts),
+        reviewer: stubReviewer(stubOpts),
+      }
+    : {
+        coder: createCoder(),
+        integrator: createIntegrator(),
+        reviewer: createReviewer(),
+      };
 }
 
 function consoleLogger() {
@@ -221,6 +232,36 @@ async function resume(): Promise<void> {
     onLog: consoleLogger(),
   });
   printSummary(summary);
+}
+
+/** Run the configured reviewers on an existing pr/<id> branch, outside the graph. */
+async function review(): Promise<void> {
+  const id = positional[0];
+  if (!id) throw new Error("Usage: npm run orch -- review <spec-id>");
+  if (!config.review.enabled) {
+    console.log(
+      "review.enabled is false in orchestrator.config.json; running anyway for this one PR.",
+    );
+  }
+  const spec = loadSpecs(config.specsDir).find((s) => s.id === id);
+  if (!spec) throw new Error(`No spec with id "${id}" in ${config.specsDir}`);
+  const runId = `review-${newRunId()}`;
+  const pr: PrRecord = {
+    ...initialPrRecords([spec])[id],
+    status: "reviewing",
+    attempts: 1,
+    branch: branchFor(config, id),
+  };
+  const result = await createReviewer()(pr, { config, runId, attempt: 1 });
+  console.log(`\nOutcome: ${result.outcome.toUpperCase()}\n`);
+  console.log(result.findings);
+  if (result.metrics) {
+    const prs = {
+      [id]: { ...pr, status: "pr-open" as const, review: result.metrics },
+    };
+    console.log("\n" + renderConsoleTable(summarize(runId, prs)));
+  }
+  if (result.outcome === "block") process.exitCode = 1;
 }
 
 /** Run the post-merge command now (e.g. trigger heavy CI on integration). */
@@ -386,12 +427,13 @@ const commands: Record<string, () => void | Promise<void>> = {
   status,
   watch,
   ci,
+  review,
   code,
   integrate,
   help: () => console.log(`Commands: ${COMMAND_LIST}`),
 };
 const COMMAND_LIST =
-  "validate | plan | smoke | run [--stub] | resume [runId] | status [runId] | watch [runId] | ci | code <id> | integrate <id>";
+  "validate | plan | smoke | run [--stub] | resume [runId] | status [runId] | watch [runId] | ci | code <id> | review <id> | integrate <id>";
 
 const handler = commands[command];
 if (!handler) {

@@ -13,6 +13,7 @@ export const PR_STATUSES = [
   "queued", // waiting for a free coder and for its dependencies to merge
   "coding", // a coding agent owns it in a worktree
   "pr-open", // branch pushed, GitHub PR open against the integration branch
+  "reviewing", // the optional review stage is looking at it
   "integrating", // the integrator is merging it
   "merged", // on the integration branch
   "failed", // gave up after maxAttemptsPerPr
@@ -51,7 +52,12 @@ export interface PrRecord {
   prUrl?: string;
   error?: string;
   coding?: PhaseMetrics;
+  review?: PhaseMetrics;
   integration?: PhaseMetrics;
+  /** Times the review stage sent this PR back to a coder. */
+  reviewRounds?: number;
+  /** Findings carried onto the PR when review rounds ran out but the PR still lands. */
+  reviewNotes?: string;
 }
 
 export const RunState = Annotation.Root({

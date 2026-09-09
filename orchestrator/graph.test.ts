@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { stubCoder, stubIntegrator } from "./agents/stub";
+import { stubCoder, stubIntegrator, stubReviewer } from "./agents/stub";
 import type { Coder } from "./agents/types";
 import { OrchestratorConfigSchema } from "./config";
 import {
@@ -148,5 +148,119 @@ describe("run budget", () => {
     expect(prs.a.status).toBe("merged");
     expect(prs.b.status).toBe("merged");
     expect(prs.c.status).toBe("queued");
+  });
+});
+
+describe("review stage", () => {
+  const reviewCfg = (extra: Record<string, unknown> = {}) =>
+    OrchestratorConfigSchema.parse({
+      coders: { count: 3 },
+      maxAttemptsPerPr: 1,
+      review: {
+        enabled: true,
+        reviewers: [{ name: "r", promptFile: "r.md" }],
+        ...extra,
+      },
+    });
+
+  async function runWithReview(
+    prs: PrRecord[],
+    reviewer: ReturnType<typeof stubReviewer>,
+    cfg = reviewCfg(),
+  ) {
+    const events: string[] = [];
+    const coderCalls: string[] = [];
+    const graph = buildGraph({
+      config: cfg,
+      coder: async (pr, ctx) => {
+        coderCalls.push(`${pr.id}#${ctx.attempt}`);
+        return stubCoder({ delayMs: 5 })(pr, ctx);
+      },
+      integrator: stubIntegrator({ delayMs: 5 }),
+      reviewer,
+      emit: (type) => events.push(type),
+    });
+    const final = await graph.invoke(
+      { runId: "test", prs: byId(prs) },
+      { recursionLimit: recursionLimitFor(prs.length, cfg) + 10 },
+    );
+    return { prs: final.prs, events, coderCalls };
+  }
+
+  it("is a no-op when disabled", async () => {
+    let called = 0;
+    const cfg = OrchestratorConfigSchema.parse({ coders: { count: 3 } });
+    const graph = buildGraph({
+      config: cfg,
+      coder: stubCoder({ delayMs: 5 }),
+      integrator: stubIntegrator({ delayMs: 5 }),
+      reviewer: async () => {
+        called++;
+        return { outcome: "block", findings: "x" };
+      },
+    });
+    const final = await graph.invoke(
+      { runId: "t", prs: byId([pr("a")]) },
+      { recursionLimit: 30 },
+    );
+    expect(final.prs.a.status).toBe("merged");
+    expect(called).toBe(0);
+  });
+
+  it("refuses to build when enabled without a reviewer", () => {
+    expect(() =>
+      buildGraph({
+        config: reviewCfg(),
+        coder: stubCoder(),
+        integrator: stubIntegrator(),
+      }),
+    ).toThrow(/no reviewer/);
+  });
+
+  it("sends a blocked PR back to a coder once without spending an attempt", async () => {
+    const { prs, events, coderCalls } = await runWithReview(
+      [pr("a"), pr("b")],
+      stubReviewer({ delayMs: 5, reviewBlockOnce: ["a"] }),
+    );
+    // maxAttemptsPerPr is 1, yet a was coded twice: the review round is free.
+    expect(coderCalls).toEqual(["a#1", "b#1", "a#2"]);
+    expect(prs.a).toMatchObject({
+      status: "merged",
+      attempts: 2,
+      reviewRounds: 1,
+    });
+    expect(prs.a.review?.costUsd).toBeCloseTo(0.05, 5); // two reviews
+    expect(prs.b).toMatchObject({ status: "merged", attempts: 1 });
+    expect(events.filter((e) => e === "pr:review-blocked")).toHaveLength(1);
+    expect(events.filter((e) => e === "pr:review-passed")).toHaveLength(2);
+  });
+
+  it("lands with notes when rounds run out (default), or fails when configured", async () => {
+    const noted = await runWithReview(
+      [pr("a")],
+      stubReviewer({ delayMs: 5, reviewBlockAlways: ["a"] }),
+    );
+    expect(noted.prs.a.status).toBe("merged");
+    expect(noted.prs.a.reviewNotes).toContain("BLOCKING");
+    expect(noted.coderCalls).toEqual(["a#1", "a#2"]);
+
+    const failed = await runWithReview(
+      [pr("a")],
+      stubReviewer({ delayMs: 5, reviewBlockAlways: ["a"] }),
+      reviewCfg({ onExhausted: "fail" }),
+    );
+    expect(failed.prs.a.status).toBe("failed");
+    expect(failed.prs.a.error).toMatch(/review blocked/);
+  });
+
+  it("maxRounds 0 never sends a PR back", async () => {
+    const { prs, coderCalls } = await runWithReview(
+      [pr("a")],
+      stubReviewer({ delayMs: 5, reviewBlockAlways: ["a"] }),
+      reviewCfg({ maxRounds: 0 }),
+    );
+    expect(coderCalls).toEqual(["a#1"]);
+    expect(prs.a.status).toBe("merged");
+    expect(prs.a.reviewNotes).toBeDefined();
   });
 });

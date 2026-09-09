@@ -1,7 +1,7 @@
 /**
  * The orchestration graph.
  *
- *   START -> schedule -> code (x N, in parallel) -> integrate -> schedule -> ... -> END
+ *   START -> schedule -> code (x N, in parallel) -> review -> integrate -> schedule -> ... -> END
  *
  * One trip around the loop is a "wave":
  *   schedule   picks up to `coders.count` runnable PRs and marks them coding
@@ -23,7 +23,12 @@ import {
   StateGraph,
   type BaseCheckpointSaver,
 } from "@langchain/langgraph";
-import type { Coder, Integrator } from "./agents/types.js";
+import type {
+  Coder,
+  Integrator,
+  Reviewer,
+  ReviewResult,
+} from "./agents/types.js";
 import type { OrchestratorConfig } from "./config.js";
 import { addPhaseMetrics } from "./metrics.js";
 import { dueEveryN, firePostMerge } from "./postmerge.js";
@@ -34,6 +39,8 @@ export interface GraphDeps {
   config: OrchestratorConfig;
   coder: Coder;
   integrator: Integrator;
+  /** Required only when `review.enabled`. */
+  reviewer?: Reviewer;
   /** Receives every ledger event; wire it to Ledger.event and/or the console. */
   emit?: (type: string, data?: Record<string, unknown>) => void;
 }
@@ -108,7 +115,11 @@ export function countMergedThisRun(prs: Record<string, PrRecord>): number {
 /** Estimated USD spent so far across every PR and phase. */
 export function totalCost(prs: Record<string, PrRecord>): number {
   return Object.values(prs).reduce(
-    (n, p) => n + (p.coding?.costUsd ?? 0) + (p.integration?.costUsd ?? 0),
+    (n, p) =>
+      n +
+      (p.coding?.costUsd ?? 0) +
+      (p.review?.costUsd ?? 0) +
+      (p.integration?.costUsd ?? 0),
     0,
   );
 }
@@ -121,7 +132,10 @@ export function buildGraph(
   deps: GraphDeps,
   checkpointer?: BaseCheckpointSaver,
 ) {
-  const { config, coder, integrator } = deps;
+  const { config, coder, integrator, reviewer } = deps;
+  if (config.review.enabled && !reviewer) {
+    throw new Error("review.enabled is true but no reviewer was provided");
+  }
   const emit = deps.emit ?? (() => {});
 
   const schedule = async (state: RunStateType) => {
@@ -209,6 +223,84 @@ export function buildGraph(
     return { prs: { [pr.id]: updated } };
   };
 
+  /**
+   * Optional review between coding and integration. A BLOCK sends the PR back
+   * to a coder with the findings as feedback, at most `review.maxRounds`
+   * times; after that the PR lands with the findings noted, or fails.
+   */
+  const review = async (state: RunStateType) => {
+    if (!config.review.enabled || !reviewer) return {};
+    const open = Object.values(state.prs)
+      .filter((p) => p.status === "pr-open")
+      .sort(byPriority);
+    const updates: Record<string, PrRecord> = {};
+    for (const pr of open) {
+      const ctx = {
+        config,
+        runId: state.runId,
+        attempt: pr.attempts,
+        onEvent: (type: string, data: Record<string, unknown> = {}) =>
+          emit(type, { prId: pr.id, ...data }),
+      };
+      emit("pr:reviewing", { prId: pr.id, round: (pr.reviewRounds ?? 0) + 1 });
+      let result: ReviewResult;
+      try {
+        result = await reviewer({ ...pr, status: "reviewing" }, ctx);
+      } catch (err) {
+        result = { outcome: "skipped", findings: (err as Error).message };
+      }
+      const review = addPhaseMetrics(pr.review, result.metrics);
+      const rounds = pr.reviewRounds ?? 0;
+      if (result.outcome === "block") {
+        if (rounds < config.review.maxRounds) {
+          updates[pr.id] = {
+            ...pr,
+            status: "queued",
+            reviewRounds: rounds + 1,
+            error: `review requested changes:\n${result.findings}`,
+            review,
+          };
+          emit("pr:review-blocked", {
+            prId: pr.id,
+            round: rounds + 1,
+            willRetry: true,
+          });
+        } else if (config.review.onExhausted === "fail") {
+          updates[pr.id] = {
+            ...pr,
+            status: "failed",
+            error: `review blocked after ${rounds} round(s):\n${result.findings}`,
+            review,
+          };
+          emit("pr:review-blocked", {
+            prId: pr.id,
+            round: rounds + 1,
+            willRetry: false,
+            failed: true,
+          });
+        } else {
+          updates[pr.id] = { ...pr, reviewNotes: result.findings, review };
+          emit("pr:review-blocked", {
+            prId: pr.id,
+            round: rounds + 1,
+            willRetry: false,
+            failed: false,
+          });
+        }
+      } else {
+        updates[pr.id] = { ...pr, review };
+        emit(
+          result.outcome === "pass" ? "pr:review-passed" : "pr:review-skipped",
+          {
+            prId: pr.id,
+            reason: result.outcome === "skipped" ? result.findings : undefined,
+          },
+        );
+      }
+    }
+    return { prs: updates };
+  };
+
   const integrate = async (state: RunStateType) => {
     const open = Object.values(state.prs)
       .filter((p) => p.status === "pr-open")
@@ -269,10 +361,12 @@ export function buildGraph(
   return new StateGraph(RunState)
     .addNode("schedule", schedule)
     .addNode("code", code, { input: CoderInput })
+    .addNode("review", review)
     .addNode("integrate", integrate)
     .addEdge(START, "schedule")
     .addConditionalEdges("schedule", routeAfterSchedule, ["code", END])
-    .addEdge("code", "integrate")
+    .addEdge("code", "review")
+    .addEdge("review", "integrate")
     .addEdge("integrate", "schedule")
     .compile({ checkpointer });
 }
@@ -284,7 +378,9 @@ function retryOrFail(
   config: OrchestratorConfig,
   retryable = true,
 ): PrRecord {
-  const canRetry = retryable && pr.attempts < config.maxAttemptsPerPr;
+  // A review round sends the PR back to a coder without spending one of its attempts.
+  const allowed = config.maxAttemptsPerPr + (pr.reviewRounds ?? 0);
+  const canRetry = retryable && pr.attempts < allowed;
   return { ...pr, status: canRetry ? "queued" : "failed", error };
 }
 

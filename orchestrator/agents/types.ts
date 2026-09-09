@@ -52,3 +52,17 @@ export type Integrator = (
   pr: PrRecord,
   ctx: AgentContext,
 ) => Promise<IntegratorResult>;
+
+export type ReviewResult = {
+  /** "skipped": no reviewer applied (classify chose none, or the stage errored). */
+  outcome: "pass" | "block" | "skipped";
+  /** Reviewer output, kept verbatim as the coder's feedback or the PR note. */
+  findings: string;
+  metrics?: PhaseMetrics;
+};
+
+/** Review an open PR's diff read-only; never edits, never merges. */
+export type Reviewer = (
+  pr: PrRecord,
+  ctx: AgentContext,
+) => Promise<ReviewResult>;

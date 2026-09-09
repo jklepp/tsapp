@@ -112,6 +112,7 @@ export interface PrSummaryRow {
   status: string;
   attempts: number;
   codingMs: number;
+  reviewMs: number;
   integrationMs: number;
   totalMs: number;
   numTurns: number;
@@ -138,8 +139,8 @@ export interface RunSummary {
   totals: Omit<PrSummaryRow, "id" | "status" | "attempts" | "prUrl">;
 }
 
-const sumPhase = (a?: PhaseMetrics, b?: PhaseMetrics) => {
-  const phases = [a, b].filter((p): p is PhaseMetrics => p !== undefined);
+const sumPhase = (...list: (PhaseMetrics | undefined)[]) => {
+  const phases = list.filter((p): p is PhaseMetrics => p !== undefined);
   const pick = (k: keyof PhaseMetrics) =>
     phases.reduce((n, p) => n + (p[k] as number), 0);
   return {
@@ -159,16 +160,18 @@ export function summarize(
   const rows: PrSummaryRow[] = Object.values(prs)
     .sort((a, b) => a.id.localeCompare(b.id))
     .map((pr) => {
-      const t = sumPhase(pr.coding, pr.integration);
+      const t = sumPhase(pr.coding, pr.review, pr.integration);
       const codingMs = pr.coding?.durationMs ?? 0;
+      const reviewMs = pr.review?.durationMs ?? 0;
       const integrationMs = pr.integration?.durationMs ?? 0;
       return {
         id: pr.id,
         status: pr.status,
         attempts: pr.attempts,
         codingMs,
+        reviewMs,
         integrationMs,
-        totalMs: codingMs + integrationMs,
+        totalMs: codingMs + reviewMs + integrationMs,
         ...t,
         totalTokens:
           t.inputTokens +
@@ -187,6 +190,7 @@ export function summarize(
     rows,
     totals: {
       codingMs: add("codingMs"),
+      reviewMs: add("reviewMs"),
       integrationMs: add("integrationMs"),
       totalMs: add("totalMs"),
       numTurns: add("numTurns"),
@@ -238,6 +242,7 @@ const COLUMNS: Column[] = [
   { header: "Tries", right: true, console: true, cell: (_, __, t) => t },
   metric("Turns", (m) => fmtInt(m.numTurns)),
   metric("Coding", (m) => fmtMs(m.codingMs)),
+  metric("Review", (m) => fmtMs(m.reviewMs)),
   metric("Integr.", (m) => fmtMs(m.integrationMs)),
   metric("In", (m) => fmtInt(m.inputTokens), false),
   metric("Out", (m) => fmtInt(m.outputTokens), false),

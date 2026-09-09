@@ -5,7 +5,7 @@
  */
 import { branchFor } from "../naming.js";
 import type { PhaseMetrics } from "../state.js";
-import type { Coder, Integrator } from "./types.js";
+import type { Coder, Integrator, Reviewer } from "./types.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -35,6 +35,10 @@ export interface StubOptions {
   failOnce?: string[];
   /** PR ids whose every coding attempt fails. */
   failAlways?: string[];
+  /** PR ids the stub reviewer blocks on their first review only. */
+  reviewBlockOnce?: string[];
+  /** PR ids the stub reviewer always blocks. */
+  reviewBlockAlways?: string[];
 }
 
 export function stubCoder(opts: StubOptions = {}): Coder {
@@ -64,5 +68,25 @@ export function stubIntegrator(opts: StubOptions = {}): Integrator {
     const startedAt = new Date();
     await sleep(opts.delayMs ?? 20);
     return { outcome: "merged", metrics: fakeMetrics(startedAt, 0.2) };
+  };
+}
+
+export function stubReviewer(opts: StubOptions = {}): Reviewer {
+  const seen = new Set<string>();
+  return async (pr) => {
+    const startedAt = new Date();
+    await sleep(opts.delayMs ?? 20);
+    const first = !seen.has(pr.id);
+    seen.add(pr.id);
+    const block =
+      opts.reviewBlockAlways?.includes(pr.id) ||
+      (first && opts.reviewBlockOnce?.includes(pr.id));
+    return {
+      outcome: block ? "block" : "pass",
+      findings: block
+        ? "- **BLOCKING** stub: simulated review finding\nVERDICT: BLOCK"
+        : "VERDICT: PASS",
+      metrics: fakeMetrics(startedAt, 0.1),
+    };
   };
 }
