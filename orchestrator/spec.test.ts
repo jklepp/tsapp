@@ -117,3 +117,27 @@ describe("previewWaves with already merged specs", () => {
     expect(previewWaves(specs, 3, ["a", "b", "c"])).toEqual([]);
   });
 });
+
+describe("spec id rules", () => {
+  const withId = (id: string) =>
+    parseSpecFile("x.md", `---\nid: ${id}\ntitle: t\n---\nbody\n`);
+  it("accepts dash-separated lowercase words and digits", () => {
+    expect(withId("001-footer-year").id).toBe("001-footer-year");
+    expect(withId("a").id).toBe("a");
+  });
+  it("rejects ids a branch-ownership hook would refuse", () => {
+    for (const bad of ["a--b", "-a", "a-", "A-b", "a_b", "x".repeat(51)]) {
+      expect(() => withId(bad), bad).toThrow();
+    }
+  });
+  it("parses contracts and serial with defaults", () => {
+    const s = parseSpecFile(
+      "y.md",
+      "---\nid: y\ntitle: t\ncontracts: [notes-api]\nserial: true\n---\nbody\n",
+    );
+    expect(s.contracts).toEqual(["notes-api"]);
+    expect(s.serial).toBe(true);
+    expect(withId("z").contracts).toEqual([]);
+    expect(withId("z").serial).toBe(false);
+  });
+});

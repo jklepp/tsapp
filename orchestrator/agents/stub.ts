@@ -3,6 +3,7 @@
  * and can be told to fail on demand. Used by `orch run --stub` and by tests
  * so the scheduling, retry and accounting logic can be exercised for free.
  */
+import { branchFor } from "../naming.js";
 import type { PhaseMetrics } from "../state.js";
 import type { Coder, Integrator } from "./types.js";
 
@@ -48,10 +49,11 @@ export function stubCoder(opts: StubOptions = {}): Coder {
         metrics: fakeMetrics(startedAt, 0.5),
       };
     }
+    const branch = branchFor(ctx.config, pr.id);
     return {
       outcome: "pr-open",
-      branch: `pr/${pr.id}`,
-      prUrl: `stub://pr/${pr.id}`,
+      branch,
+      prUrl: `stub://${branch}`,
       metrics: fakeMetrics(startedAt),
     };
   };

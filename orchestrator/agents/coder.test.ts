@@ -210,3 +210,54 @@ describe("coder", () => {
     );
   });
 });
+
+describe("coder naming from config", () => {
+  it("uses branchPrefix and worktreeNamePrefix", async () => {
+    const repo = await makeRepo();
+    const root = path.dirname(repo);
+    fs.writeFileSync(path.join(repo, "check.js"), "process.exit(0)");
+    fs.mkdirSync(path.join(repo, "specs"));
+    fs.writeFileSync(
+      path.join(repo, "specs", "n.md"),
+      "---\nid: n\ntitle: N\n---\nbody\n",
+    );
+    await commitAll(repo, "seed");
+    const cfg = resolvePaths(
+      OrchestratorConfigSchema.parse({
+        repoPath: repo,
+        specsDir: path.join(repo, "specs"),
+        runsDir: path.join(root, "runs"),
+        worktreesDir: path.join(root, "wt"),
+        checkCommand: "node check.js",
+        linkNodeModules: false,
+        branchPrefix: "orch",
+        worktreeNamePrefix: "orch-",
+      }),
+      root,
+    );
+    let seenDir = "";
+    const coder = createCoder({
+      runSession: fakeSession(async (cwd) => {
+        seenDir = cwd;
+        fs.writeFileSync(path.join(cwd, "n.txt"), "n\n");
+        await commitAll(cwd, "n: done");
+      }),
+    });
+    const record: PrRecord = {
+      id: "n",
+      title: "N",
+      specPath: path.join(repo, "specs", "n.md"),
+      priority: 3,
+      dependsOn: [],
+      touches: [],
+      status: "coding",
+      attempts: 1,
+    };
+    const result = await coder(record, { config: cfg, runId: "r", attempt: 1 });
+    expect(result.outcome).toBe("pr-open");
+    if (result.outcome === "pr-open") expect(result.branch).toBe("orch/n");
+    expect(path.basename(seenDir)).toBe("orch-n");
+    expect(await branchExists(repo, "orch/n")).toBe(true);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});

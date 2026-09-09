@@ -42,6 +42,8 @@ export interface PrRecord {
   priority: number;
   dependsOn: string[];
   touches: string[];
+  contracts?: string[];
+  serial?: boolean;
   status: PrStatus;
   attempts: number;
   branch?: string;
@@ -78,6 +80,8 @@ export function initialPrRecords(specs: PrSpec[]): Record<string, PrRecord> {
         priority: s.priority,
         dependsOn: s.dependsOn,
         touches: s.touches,
+        contracts: s.contracts,
+        serial: s.serial,
         status: "queued" as const,
         attempts: 0,
       },

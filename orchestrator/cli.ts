@@ -16,7 +16,8 @@
  *   npm run orch -- status [runId]      show a run's state from its checkpoint
  */
 import { query, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import { branchFor, createCoder } from "./agents/coder.js";
+import { createCoder } from "./agents/coder.js";
+import { branchFor } from "./naming.js";
 import { createIntegrator } from "./agents/integrator.js";
 import { stubCoder, stubIntegrator } from "./agents/stub.js";
 import { loadConfig } from "./config.js";
@@ -93,7 +94,7 @@ async function plan(): Promise<void> {
   const specs = loadSpecs(config.specsDir);
   const done = await alreadyMerged(config);
   const merged = specs
-    .filter((s) => done.has(branchFor(s.id)))
+    .filter((s) => done.has(branchFor(config, s.id)))
     .map((s) => s.id);
   if (merged.length) {
     console.log(
@@ -248,7 +249,7 @@ async function integrate(): Promise<void> {
     ...initialPrRecords([spec])[id],
     status: "integrating",
     attempts: 1,
-    branch: branchFor(id),
+    branch: branchFor(config, id),
   };
   console.log(
     `Merging ${pr.branch} into ${config.integrationBranch} (run ${runId})`,

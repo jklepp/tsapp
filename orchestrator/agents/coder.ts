@@ -32,11 +32,10 @@ import {
   runCommand,
   tail,
 } from "../git.js";
+import { branchFor, worktreeDirFor } from "../naming.js";
 import type { PrRecord } from "../state.js";
 import { runAgentSession, type SessionRunner } from "./session.js";
 import type { Coder, CoderResult } from "./types.js";
-
-export const branchFor = (prId: string) => `pr/${prId}`;
 
 export const CODER_RULES = `
 You are implementing exactly one pull request from the spec in the user message. You are working unattended in a dedicated git worktree on a branch of your own; nobody will answer questions.
@@ -98,8 +97,8 @@ export function createCoder(deps: CoderDeps = {}): Coder {
   return async (pr, ctx): Promise<CoderResult> => {
     const { config, attempt } = ctx;
     const repo = config.repoPath;
-    const branch = branchFor(pr.id);
-    const dir = path.join(config.worktreesDir, pr.id);
+    const branch = branchFor(config, pr.id);
+    const dir = worktreeDirFor(config, pr.id);
     const logFile = path.join(
       config.runsDir,
       ctx.runId,

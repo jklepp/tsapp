@@ -40,8 +40,9 @@ import {
   tail,
   unmergedFiles,
 } from "../git.js";
+import { branchFor, integrationWorktreeDir } from "../naming.js";
 import type { PhaseMetrics, PrRecord } from "../state.js";
-import { branchFor, parseBlocked } from "./coder.js";
+import { parseBlocked } from "./coder.js";
 import { runAgentSession, type SessionRunner } from "./session.js";
 import type { Integrator, IntegratorResult } from "./types.js";
 
@@ -130,8 +131,8 @@ export function createIntegrator(deps: IntegratorDeps = {}): Integrator {
     const { config, attempt } = ctx;
     const repo = config.repoPath;
     const target = config.integrationBranch;
-    const branch = pr.branch ?? branchFor(pr.id);
-    const dir = path.join(config.worktreesDir, "_integration");
+    const branch = pr.branch ?? branchFor(config, pr.id);
+    const dir = integrationWorktreeDir(config);
     const logFile = path.join(
       config.runsDir,
       ctx.runId,

@@ -11,8 +11,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
-import { branchFor } from "./agents/coder.js";
 import type { Coder, Integrator } from "./agents/types.js";
+import { branchFor } from "./naming.js";
 import type { OrchestratorConfig } from "./config.js";
 import { branchExists, mergedBranches } from "./git.js";
 import { buildGraph, recursionLimitFor } from "./graph.js";
@@ -162,10 +162,10 @@ export async function runOrchestrator(
   const prs = initialPrRecords(specs);
   const done = await alreadyMerged(config);
   const skipped = specs
-    .filter((s) => done.has(branchFor(s.id)))
+    .filter((s) => done.has(branchFor(config, s.id)))
     .map((s) => s.id);
   for (const id of skipped) {
-    prs[id] = { ...prs[id], status: "merged", branch: branchFor(id) };
+    prs[id] = { ...prs[id], status: "merged", branch: branchFor(config, id) };
   }
 
   emit("run:start", {

@@ -25,14 +25,19 @@ import { z } from "zod";
 export const SpecFrontmatterSchema = z.object({
   id: z
     .string()
+    .max(50, "id must be at most 50 characters so branch names stay short")
     .regex(
-      /^[a-z0-9][a-z0-9-]*$/,
-      "id must be lowercase letters, digits and dashes",
+      /^[a-z0-9]+(-[a-z0-9]+)*$/,
+      "id must be lowercase letters and digits, single dashes between words",
     ),
   title: z.string().min(1),
   priority: z.number().int().min(1).max(5).default(3),
   depends_on: z.array(z.string()).default([]),
   touches: z.array(z.string()).default([]),
+  /** Named interfaces this PR changes (an API, a schema). Two PRs sharing one never run together. */
+  contracts: z.array(z.string()).default([]),
+  /** Run alone in its wave, before anything else (e.g. a migration). */
+  serial: z.boolean().default(false),
 });
 
 export interface PrSpec {
@@ -42,6 +47,8 @@ export interface PrSpec {
   dependsOn: string[];
   /** Path hints. Two PRs that touch the same path are not run concurrently. */
   touches: string[];
+  contracts: string[];
+  serial: boolean;
   /** Absolute path of the spec file; the coder reads the body from here. */
   specPath: string;
   /** Length of the markdown body, used to flag oversized or empty specs. */
@@ -57,6 +64,8 @@ export function parseSpecFile(filePath: string, raw: string): PrSpec {
     priority: fm.priority,
     dependsOn: fm.depends_on,
     touches: fm.touches,
+    contracts: fm.contracts,
+    serial: fm.serial,
     specPath: path.resolve(filePath),
     bodyChars: content.trim().length,
   };
