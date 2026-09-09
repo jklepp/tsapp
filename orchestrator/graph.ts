@@ -27,6 +27,7 @@ import type { Coder, Integrator } from "./agents/types.js";
 import type { OrchestratorConfig } from "./config.js";
 import { addPhaseMetrics } from "./metrics.js";
 import { dueEveryN, firePostMerge } from "./postmerge.js";
+import { packWave, type SchedulingRules } from "./scheduling.js";
 import { RunState, type PrRecord, type RunStateType } from "./state.js";
 
 export interface GraphDeps {
@@ -41,31 +42,24 @@ const byPriority = (a: PrRecord, b: PrRecord) =>
   a.priority - b.priority || a.id.localeCompare(b.id);
 
 /**
- * Choose the next wave: queued PRs whose dependencies are all merged, highest
- * priority first, never two in the same wave that touch the same path.
+ * Choose the next wave: queued PRs whose dependencies are all merged, packed
+ * by the rules in scheduling.ts (serial first and alone, no shared contracts,
+ * no shared paths without contracts, priority order).
  */
 export function pickWave(
   prs: Record<string, PrRecord>,
   slots: number,
+  rules: SchedulingRules = { serialPaths: [] },
 ): PrRecord[] {
   const merged = new Set(
     Object.values(prs)
       .filter((p) => p.status === "merged")
       .map((p) => p.id),
   );
-  const wave: PrRecord[] = [];
-  const touched = new Set<string>();
   const candidates = Object.values(prs)
     .filter((p) => p.status === "queued")
-    .filter((p) => p.dependsOn.every((d) => merged.has(d)))
-    .sort(byPriority);
-  for (const pr of candidates) {
-    if (wave.length >= slots) break;
-    if (pr.touches.some((t) => touched.has(t))) continue;
-    wave.push(pr);
-    pr.touches.forEach((t) => touched.add(t));
-  }
-  return wave;
+    .filter((p) => p.dependsOn.every((d) => merged.has(d)));
+  return packWave(candidates, slots, rules);
 }
 
 /** Queued PRs that depend on a failed PR can never run; fail them too. */
@@ -140,7 +134,11 @@ export function buildGraph(
       config.maxRunBudgetUsd !== undefined && spent >= config.maxRunBudgetUsd;
     const wave = overBudget
       ? []
-      : pickWave({ ...state.prs, ...blocked }, config.coders.count);
+      : pickWave(
+          { ...state.prs, ...blocked },
+          config.coders.count,
+          config.scheduling,
+        );
     const updates: Record<string, PrRecord> = { ...blocked };
     for (const pr of wave) {
       updates[pr.id] = { ...pr, status: "coding", attempts: pr.attempts + 1 };

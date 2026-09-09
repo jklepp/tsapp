@@ -112,7 +112,12 @@ async function plan(): Promise<void> {
     .filter((s) => !merged.includes(s.id))
     .forEach((s, i) => console.log(`  ${i + 1}. ${s.id}`));
   console.log(`\nWave preview with ${config.coders.count} coder(s):`);
-  const waves = previewWaves(specs, config.coders.count, merged);
+  const waves = previewWaves(
+    specs,
+    config.coders.count,
+    merged,
+    config.scheduling,
+  );
   if (waves.length === 0) console.log("  nothing to do");
   waves.forEach((wave, i) =>
     console.log(`  wave ${i + 1}: ${wave.map((s) => s.id).join(", ")}`),

@@ -21,6 +21,7 @@ import fs from "node:fs";
 import path from "node:path";
 import matter from "gray-matter";
 import { z } from "zod";
+import { packWave, type SchedulingRules } from "./scheduling.js";
 
 export const SpecFrontmatterSchema = z.object({
   id: z
@@ -146,27 +147,23 @@ export function topologicalOrder(specs: PrSpec[]): PrSpec[] {
 
 /**
  * Static preview of how the scheduler would batch the queue with N coders,
- * assuming every PR succeeds. The live scheduler (pickWave in graph.ts) applies
- * the same rules wave by wave, so this matches a real run when nothing fails.
+ * assuming every PR succeeds. Uses the same packing rules as the live
+ * scheduler (scheduling.ts), so this matches a real run when nothing fails.
  */
 export function previewWaves(
   specs: PrSpec[],
   concurrency: number,
   alreadyMerged: Iterable<string> = [],
+  rules: SchedulingRules = { serialPaths: [] },
 ): PrSpec[][] {
   const merged = new Set(alreadyMerged);
   const remaining = topologicalOrder(specs).filter((s) => !merged.has(s.id));
   const waves: PrSpec[][] = [];
   while (remaining.length > 0) {
-    const wave: PrSpec[] = [];
-    const touched = new Set<string>();
-    for (const s of remaining) {
-      if (wave.length >= concurrency) break;
-      if (!s.dependsOn.every((d) => merged.has(d))) continue;
-      if (s.touches.some((t) => touched.has(t))) continue;
-      wave.push(s);
-      s.touches.forEach((t) => touched.add(t));
-    }
+    const candidates = remaining.filter((s) =>
+      s.dependsOn.every((d) => merged.has(d)),
+    );
+    const wave = packWave(candidates, concurrency, rules);
     if (wave.length === 0) {
       throw new Error("No schedulable spec; run validateSpecs first");
     }
