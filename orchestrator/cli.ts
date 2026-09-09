@@ -14,6 +14,8 @@
  *                                       there is a conflict or the checks break)
  *   npm run orch -- resume [runId]      continue an interrupted run (latest by default)
  *   npm run orch -- status [runId]      show a run's state from its checkpoint
+ *   npm run orch -- watch [runId]       live view of a run from its ledger, redrawn
+ *                    [--once]           each second until the run ends (or once)
  */
 import { query, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createCoder } from "./agents/coder.js";
@@ -34,7 +36,10 @@ import {
   resumeOrchestrator,
   runOrchestrator,
 } from "./run.js";
+import fs from "node:fs";
+import path from "node:path";
 import { abortAllSessions } from "./agents/session.js";
+import { foldEvents, parseLedger, renderWatch } from "./watch.js";
 import type { RunSummary } from "./metrics.js";
 import {
   loadSpecs,
@@ -211,6 +216,36 @@ async function resume(): Promise<void> {
 }
 
 /** Show a run's state from its last checkpoint. Read-only; safe during a run. */
+/**
+ * Live view of a run: one row per PR (state, attempt, turns, elapsed, tokens,
+ * last action) and a feed of the agents' recent actions, redrawn every second
+ * from the run's ledger. Read-only; run it from a second terminal.
+ */
+async function watch(): Promise<void> {
+  const runId = positional[0] ?? latestRunId(config);
+  if (!runId) throw new Error(`No run with a checkpoint in ${config.runsDir}`);
+  const ledgerFile = path.join(config.runsDir, runId, "ledger.jsonl");
+  if (!fs.existsSync(ledgerFile)) throw new Error(`No ledger at ${ledgerFile}`);
+  const once = flags.once === true;
+  const render = () => {
+    const state = foldEvents(parseLedger(fs.readFileSync(ledgerFile, "utf8")));
+    state.runId = runId;
+    const text = renderWatch(state);
+    if (!once) process.stdout.write("\x1b[2J\x1b[H");
+    console.log(text);
+    return state.finished !== undefined;
+  };
+  if (render() || once) return;
+  await new Promise<void>((resolve) => {
+    const timer = setInterval(() => {
+      if (render()) {
+        clearInterval(timer);
+        resolve();
+      }
+    }, 1000);
+  });
+}
+
 async function status(): Promise<void> {
   const runId = positional[0] ?? latestRunId(config);
   if (!runId) throw new Error(`No run with a checkpoint in ${config.runsDir}`);
@@ -327,12 +362,13 @@ const commands: Record<string, () => void | Promise<void>> = {
   run,
   resume,
   status,
+  watch,
   code,
   integrate,
   help: () => console.log(`Commands: ${COMMAND_LIST}`),
 };
 const COMMAND_LIST =
-  "validate | plan | smoke | run [--stub] | resume [runId] | status [runId] | code <id> | integrate <id>";
+  "validate | plan | smoke | run [--stub] | resume [runId] | status [runId] | watch [runId] | code <id> | integrate <id>";
 
 const handler = commands[command];
 if (!handler) {
