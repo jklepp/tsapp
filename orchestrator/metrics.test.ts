@@ -7,6 +7,7 @@ import type { SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   Ledger,
   phaseMetricsFromResult,
+  renderConsoleTable,
   renderSummaryTable,
   summarize,
 } from "./metrics";
@@ -106,6 +107,19 @@ describe("summarize + renderSummaryTable", () => {
     const table = renderSummaryTable(s);
     expect(table).toContain("| a | failed | 1 |");
     expect(table).toContain("**total**");
+
+    const lines = renderConsoleTable(s).split("\n");
+    expect(lines).toHaveLength(6); // header, rule, a, b, rule, total
+    expect(lines[0].startsWith("PR")).toBe(true);
+    // Every line is padded to the same width, so columns line up.
+    const widths = new Set(lines.map((l) => l.trimEnd().length));
+    expect(widths.size).toBeLessThanOrEqual(2);
+    expect(lines[2]).toMatch(
+      /^a\s+failed\s+1\s+4s\s+0s\s+4\s+4\s+4\s+4\s+16\s+\$0\.0400$/,
+    );
+    expect(lines[5]).toMatch(
+      /^total\s+6s\s+1s\s+7\s+7\s+7\s+7\s+28\s+\$0\.0700$/,
+    );
   });
 });
 

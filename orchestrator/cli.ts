@@ -4,21 +4,25 @@
  *   npm run orch -- validate            parse every spec and report problems
  *   npm run orch -- plan                show dependency order and a wave preview
  *   npm run orch -- smoke               one tiny Agent SDK session; prints a metrics row
+ *   npm run orch -- run                 run every spec with the real agents (spends tokens)
  *   npm run orch -- run --stub          run the whole graph with stub agents (free)
  *                    [--fail-once id]   make that PR's first coding attempt fail
  *                    [--fail id]        make every attempt for that PR fail
  *   npm run orch -- code <id>           run the real coder on one spec (spends tokens)
  *                    [--attempt N]      continue on the existing branch as attempt N
+ *   npm run orch -- integrate <id>      merge pr/<id> into integration (free unless
+ *                                       there is a conflict or the checks break)
  *
- * Later steps add: run (real agents), resume, status.
+ * Later steps add: resume, status.
  */
 import { query, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import { createCoder } from "./agents/coder.js";
+import { branchFor, createCoder } from "./agents/coder.js";
+import { createIntegrator } from "./agents/integrator.js";
 import { stubCoder, stubIntegrator } from "./agents/stub.js";
 import { loadConfig } from "./config.js";
 import {
   phaseMetricsFromResult,
-  renderSummaryTable,
+  renderConsoleTable,
   summarize,
 } from "./metrics.js";
 import { newRunId, runOrchestrator } from "./run.js";
@@ -132,29 +136,73 @@ async function smoke(): Promise<void> {
     attempts: 1,
     coding: metrics,
   };
-  console.log("\n" + renderSummaryTable(summarize("smoke", prs)));
+  console.log("\n" + renderConsoleTable(summarize("smoke", prs)));
 }
 
 async function run(): Promise<void> {
-  if (!flags.stub) {
-    throw new Error(
-      "Real integration arrives in Step 4. For now use: npm run orch -- run --stub",
-    );
-  }
   const stubOpts = {
     delayMs: 300,
     failOnce: listFlag("fail-once"),
     failAlways: listFlag("fail"),
   };
+  const agents = flags.stub
+    ? { coder: stubCoder(stubOpts), integrator: stubIntegrator(stubOpts) }
+    : { coder: createCoder(), integrator: createIntegrator() };
+  console.log(
+    flags.stub
+      ? "Stub run: no tokens will be spent."
+      : `Live run: coders on ${config.coders.model} (max $${config.coders.maxBudgetUsd}/attempt), integrator on ${config.integrator.model}.`,
+  );
   const t0 = Date.now();
   const stamp = () => `[${((Date.now() - t0) / 1000).toFixed(1)}s]`;
   const summary = await runOrchestrator(config, {
-    coder: stubCoder(stubOpts),
-    integrator: stubIntegrator(stubOpts),
+    ...agents,
     onLog: (line) => console.log(`${stamp()} ${line}`),
   });
   console.log(`\nRun ${summary.runId} written to ${config.runsDir}`);
-  console.log("\n" + renderSummaryTable(summary));
+  console.log("\n" + renderConsoleTable(summary));
+}
+
+/** Merge one existing pr/<id> branch into integration, outside the graph. */
+async function integrate(): Promise<void> {
+  const id = positional[0];
+  if (!id) throw new Error("Usage: npm run orch -- integrate <spec-id>");
+  const spec = loadSpecs(config.specsDir).find((s) => s.id === id);
+  if (!spec) throw new Error(`No spec with id "${id}" in ${config.specsDir}`);
+  const runId = `integrate-${newRunId()}`;
+  const pr: PrRecord = {
+    ...initialPrRecords([spec])[id],
+    status: "integrating",
+    attempts: 1,
+    branch: branchFor(id),
+  };
+  console.log(
+    `Merging ${pr.branch} into ${config.integrationBranch} (run ${runId})`,
+  );
+  const result = await createIntegrator()(pr, { config, runId, attempt: 1 });
+  if (result.outcome === "merged") {
+    console.log(
+      result.metrics.numTurns === 0
+        ? "\nMerged cleanly; no model session was needed."
+        : "\nMerged after a model session.",
+    );
+  } else {
+    console.log(`\nRejected: ${result.error}`);
+    process.exitCode = 1;
+  }
+  if (result.metrics) {
+    const prs = {
+      [id]: {
+        ...pr,
+        status:
+          result.outcome === "merged"
+            ? ("merged" as const)
+            : ("pr-open" as const),
+        integration: result.metrics,
+      },
+    };
+    console.log("\n" + renderConsoleTable(summarize(runId, prs)));
+  }
 }
 
 /** Run the real coder on a single spec, outside the graph. Spends tokens. */
@@ -193,7 +241,7 @@ async function code(): Promise<void> {
         coding: result.metrics,
       },
     };
-    console.log("\n" + renderSummaryTable(summarize(runId, prs)));
+    console.log("\n" + renderConsoleTable(summarize(runId, prs)));
   }
 }
 
@@ -205,15 +253,15 @@ const commands: Record<string, () => void | Promise<void>> = {
   smoke,
   run,
   code,
-  help: () =>
-    console.log("Commands: validate | plan | smoke | run --stub | code <id>"),
+  integrate,
+  help: () => console.log(`Commands: ${COMMAND_LIST}`),
 };
+const COMMAND_LIST =
+  "validate | plan | smoke | run [--stub] | code <id> | integrate <id>";
 
 const handler = commands[command];
 if (!handler) {
-  console.error(
-    `Unknown command "${command}". Commands: validate | plan | smoke | run --stub | code <id>`,
-  );
+  console.error(`Unknown command "${command}". Commands: ${COMMAND_LIST}`);
   process.exit(1);
 }
 await handler();

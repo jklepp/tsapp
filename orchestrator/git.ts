@@ -105,8 +105,80 @@ export async function commitAll(cwd: string, message: string) {
   await git(["commit", "-m", message], cwd);
 }
 
-export async function push(cwd: string, branch: string, remote = "origin") {
-  await git(["push", "--force-with-lease", "-u", remote, branch], cwd);
+/**
+ * Push a branch. PR branches are force-pushed (with lease) because a retry
+ * may rewrite them; the integration branch is only ever fast-forwarded.
+ */
+export async function push(
+  cwd: string,
+  branch: string,
+  opts: { remote?: string; force?: boolean } = {},
+) {
+  const { remote = "origin", force = true } = opts;
+  const args = ["push", "-u", remote, branch];
+  if (force) args.splice(1, 0, "--force-with-lease");
+  await git(args, cwd);
+}
+
+export async function revParse(cwd: string, ref = "HEAD") {
+  return git(["rev-parse", ref], cwd);
+}
+
+export async function resetHard(cwd: string, ref: string) {
+  await git(["reset", "--hard", ref], cwd);
+}
+
+/** Abort an in-progress merge if there is one; a no-op otherwise. */
+export async function mergeAbort(cwd: string) {
+  try {
+    await git(["merge", "--abort"], cwd);
+  } catch {
+    // no merge in progress
+  }
+}
+
+/** Paths still carrying conflict markers in an in-progress merge. */
+export async function unmergedFiles(cwd: string): Promise<string[]> {
+  const out = await git(["diff", "--name-only", "--diff-filter=U"], cwd);
+  return out ? out.split(/\r?\n/).filter(Boolean) : [];
+}
+
+export type MergeOutcome =
+  | { status: "merged" }
+  | { status: "up-to-date" }
+  | { status: "conflict"; files: string[] };
+
+/**
+ * Merge `branch` into the checked-out branch with a merge commit. On
+ * conflict the merge is left in progress so an agent can resolve it.
+ */
+export async function merge(
+  cwd: string,
+  branch: string,
+  message: string,
+): Promise<MergeOutcome> {
+  try {
+    const out = await git(
+      ["merge", "--no-ff", "--no-edit", "-m", message, branch],
+      cwd,
+    );
+    return /already up to date/i.test(out)
+      ? { status: "up-to-date" }
+      : { status: "merged" };
+  } catch (err) {
+    const files = await unmergedFiles(cwd);
+    if (files.length) return { status: "conflict", files };
+    throw err;
+  }
+}
+
+/** Short names of local branches whose tip is already contained in `into`. */
+export async function mergedBranches(repo: string, into: string) {
+  const out = await git(
+    ["branch", "--merged", into, "--format=%(refname:short)"],
+    repo,
+  );
+  return out ? out.split(/\r?\n/).filter(Boolean) : [];
 }
 
 export interface PullRequestInfo {

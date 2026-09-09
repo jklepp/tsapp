@@ -58,6 +58,38 @@ A failure returns its reason (check output, "no changes", a cap hit) as
 feedback the retry reads. An agent that answers `BLOCKED: <reason>` marks the
 PR failed immediately, because another attempt would only spend more tokens.
 
+## What the integrator actually does
+
+Most merges need no model, so the harness tries the cheap path first:
+
+1. Fresh worktree on `integration`, note the current commit.
+2. `git merge --no-ff pr/<id>`. A clean merge goes straight to step 3. A
+   branch that is already in `integration` counts as merged, which makes
+   retries after a crash safe. A conflict starts one model session in that
+   worktree with the conflicted file list and the PR's spec, and the harness
+   then verifies no conflict markers remain and completes the merge commit.
+3. Run `checkCommand` in the harness. If it fails and no session has run yet,
+   one session gets the check output and a mandate to make the smallest fix.
+   At most one session runs per integration attempt.
+4. Push `integration` when the repo has a remote. GitHub then closes the PR as
+   merged on its own, because the PR's commits are now in the base branch.
+
+Any rejection resets `integration` to the commit from step 1, so a bad PR can
+never leave the shared branch broken. The rejection text goes back to a coder
+as feedback, and that coder's retry starts by merging `integration` into its
+branch.
+
+PRs are integrated one at a time, in priority order, because two merges into
+one branch cannot safely run at once. The `Integr.` column in the summary
+shows the time this took and the tokens it cost, which is usually zero.
+
+## Re-running
+
+At the start of every run, any spec whose `pr/<id>` branch is already
+contained in `integration` is marked merged before scheduling. So the specs
+folder is a permanent record of what you asked for, and `run` after a crash,
+a partial failure, or adding new specs only builds what is missing.
+
 ## Data flow
 
 ```
@@ -129,6 +161,7 @@ to the bill but not the bill; the Claude Console usage page is authoritative.
 | `agents/stub.ts`           | Free stand-ins for both roles, used by `run --stub` and tests. |
 | `agents/session.ts`        | One sandboxed Agent SDK session with transcript and metrics.   |
 | `agents/coder.ts`          | The real coder: worktree, session, gates, push, PR.            |
+| `agents/integrator.ts`     | The integrator: merge, check, session only on trouble, reset.  |
 | `cli.ts`                   | `validate`, `plan`, `smoke`, `run --stub` commands.            |
 | `orchestrator.config.json` | Per-project settings, lives in the target repo root.           |
 
@@ -139,7 +172,9 @@ npm run orch -- validate    # parse every spec, report problems
 npm run orch -- plan        # dependency order and wave preview
 npm run orch -- smoke       # one tiny model call; prints a metrics row
 npm run orch -- run --stub  # whole pipeline with stub agents, zero cost
+npm run orch -- run         # everything, with the real agents (spends tokens)
 npm run orch -- code <id>   # real coder on one spec, outside the graph (spends tokens)
+npm run orch -- integrate <id>  # merge pr/<id> into integration (free unless it conflicts)
      [--fail-once <id>]     # simulate one failed coding attempt for that PR
      [--fail <id>]          # simulate a PR that never succeeds
 npm run orch:typecheck      # type-check this folder (also part of npm run check)
@@ -158,6 +193,6 @@ Nothing in this folder imports from the application code.
 1. Foundations: specs, config, state, metrics, CLI. **Done.**
 2. The graph: LangGraph nodes and edges, the 3-slot scheduler, retries, stub agents. **Done.**
 3. The coder: git worktree per PR, sandboxed Agent SDK session, harness-run check gate, push and PR. **Done.**
-4. The integrator: sequential merge, `checkCommand` after each merge, conflict resolution, failure routing.
+4. The integrator: sequential merge, `checkCommand` after each merge, model only on conflict or breakage, reset on rejection. Safe re-runs. **Done.**
 5. Resilience: checkpointing so a crashed run resumes, retry budget, token and turn caps, run summary.
 6. Dry run on this repo with the three sample specs, then tune prompts for token efficiency.

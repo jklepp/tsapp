@@ -3,8 +3,10 @@
  * write the ledger and summary. Which agents run is injected, so the same
  * function serves `--stub` runs, tests, and the real thing.
  */
+import { branchFor } from "./agents/coder.js";
 import type { Coder, Integrator } from "./agents/types.js";
 import type { OrchestratorConfig } from "./config.js";
+import { branchExists, mergedBranches } from "./git.js";
 import { buildGraph, recursionLimitFor } from "./graph.js";
 import { Ledger, summarize, writeSummary, type RunSummary } from "./metrics.js";
 import { loadSpecs, validateSpecs } from "./spec.js";
@@ -50,9 +52,30 @@ export function describeEvent(
       return `${pr}: failed (${data.error})`;
     case "run:drained":
       return "nothing left to schedule";
+    case "run:start": {
+      const skipped = data.skipped as string[];
+      return (
+        `run started: ${(data.specs as string[]).length} spec(s), ${data.coders} coder(s)` +
+        (skipped.length
+          ? `; already merged, skipping: ${skipped.join(", ")}`
+          : "")
+      );
+    }
+    case "run:end":
+      return `run finished: ${data.merged} merged, ${data.failed} failed, $${(data.costUsd as number).toFixed(4)}`;
     default:
       return `${type} ${JSON.stringify(data)}`;
   }
+}
+
+/** Branch names already contained in the integration branch, if it exists. */
+async function alreadyMerged(config: OrchestratorConfig): Promise<Set<string>> {
+  if (!(await branchExists(config.repoPath, config.integrationBranch))) {
+    return new Set();
+  }
+  return new Set(
+    await mergedBranches(config.repoPath, config.integrationBranch),
+  );
 }
 
 export async function runOrchestrator(
@@ -71,8 +94,21 @@ export async function runOrchestrator(
     opts.onLog?.(describeEvent(type, data));
   };
 
+  // Specs whose branch is already in integration are done; mark them merged
+  // up front so dependants can proceed and nothing is built twice. This is
+  // what makes re-running after a crash or a partial failure safe.
+  const prs = initialPrRecords(specs);
+  const done = await alreadyMerged(config);
+  const skipped = specs
+    .filter((s) => done.has(branchFor(s.id)))
+    .map((s) => s.id);
+  for (const id of skipped) {
+    prs[id] = { ...prs[id], status: "merged", branch: branchFor(id) };
+  }
+
   emit("run:start", {
     specs: specs.map((s) => s.id),
+    skipped,
     coders: config.coders.count,
   });
   const graph = buildGraph({
@@ -82,7 +118,7 @@ export async function runOrchestrator(
     emit,
   });
   const final = await graph.invoke(
-    { runId, prs: initialPrRecords(specs) },
+    { runId, prs },
     { recursionLimit: recursionLimitFor(specs.length, config) },
   );
 

@@ -74,6 +74,7 @@ export function buildCoderPrompt(
       `## Previous attempt (${attempt - 1}) failed`,
       "",
       "Your earlier commits on this branch are kept. Fix the problem below rather than starting over.",
+      `If the failure came from merging into ${config.integrationBranch}, first run \`git merge ${config.integrationBranch}\`, resolve any conflicts, then fix and re-check.`,
       "",
       "```",
       pr.error.trim(),
@@ -193,7 +194,7 @@ export function createCoder(deps: CoderDeps = {}): Coder {
           base: config.integrationBranch,
           head: branch,
           title: `${pr.id}: ${pr.title}`,
-          body: `${session.finalText.trim()}\n\nSpec: \`${path.relative(repo, pr.specPath)}\``,
+          body: `${session.finalText.trim()}\n\nSpec: \`${path.relative(repo, pr.specPath).replaceAll("\\", "/")}\``,
         });
         prUrl = created.url;
         prNumber = created.number;

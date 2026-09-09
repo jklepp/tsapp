@@ -71,6 +71,8 @@ export const OrchestratorConfigSchema = z.object({
   worktreeSetupCommand: z.string().optional(),
   /** Push branches and open GitHub PRs with `gh` when the repo has a remote. */
   openPullRequests: z.boolean().default(true),
+  /** Push the integration branch after every merge when the repo has a remote. */
+  pushIntegration: z.boolean().default(true),
   coders: AgentSettingsSchema.extend({
     /** How many coding agents run at once. */
     count: z.number().int().min(1).max(8).default(3),
