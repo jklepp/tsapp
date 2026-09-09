@@ -83,6 +83,28 @@ PRs are integrated one at a time, in priority order, because two merges into
 one branch cannot safely run at once. The `Integr.` column in the summary
 shows the time this took and the tokens it cost, which is usually zero.
 
+## Crashes, Ctrl+C, and budgets
+
+Every run has a thread id (its run id) and a `checkpoints.sqlite` file in its
+run directory. LangGraph writes the whole state there after every superstep,
+which is after `schedule`, after all of a wave's coders, and after
+`integrate`. That gives three guarantees:
+
+- **`npm run orch -- resume`** continues the latest run (or a named one) from
+  its last checkpoint. Finished work is kept. Tasks that were in flight start
+  again, and the agents are built for that: a first-attempt coder resets its
+  branch, a retry reuses it, and the integrator treats an already merged
+  branch as merged.
+- **Ctrl+C** aborts every live agent session, so no Claude subprocess keeps
+  spending after you stop the run, and leaves the checkpoint for `resume`.
+- **`npm run orch -- status`** reads the checkpoint without running anything,
+  so you can check on a run from another terminal.
+
+Spending has three caps. Per attempt, `maxTurns` and `maxBudgetUsd` stop a
+runaway agent. Per run, `maxRunBudgetUsd` (optional) stops the scheduler from
+starting new waves once the estimated total is reached; PRs in flight finish,
+the rest stay queued, and a later `run` picks them up.
+
 ## Re-running
 
 At the start of every run, any spec whose `pr/<id>` branch is already
@@ -175,6 +197,8 @@ npm run orch -- run --stub  # whole pipeline with stub agents, zero cost
 npm run orch -- run         # everything, with the real agents (spends tokens)
 npm run orch -- code <id>   # real coder on one spec, outside the graph (spends tokens)
 npm run orch -- integrate <id>  # merge pr/<id> into integration (free unless it conflicts)
+npm run orch -- resume [runId]  # continue an interrupted run from its checkpoint
+npm run orch -- status [runId]  # show a run's state; read-only
      [--fail-once <id>]     # simulate one failed coding attempt for that PR
      [--fail <id>]          # simulate a PR that never succeeds
 npm run orch:typecheck      # type-check this folder (also part of npm run check)
@@ -194,5 +218,5 @@ Nothing in this folder imports from the application code.
 2. The graph: LangGraph nodes and edges, the 3-slot scheduler, retries, stub agents. **Done.**
 3. The coder: git worktree per PR, sandboxed Agent SDK session, harness-run check gate, push and PR. **Done.**
 4. The integrator: sequential merge, `checkCommand` after each merge, model only on conflict or breakage, reset on rejection. Safe re-runs. **Done.**
-5. Resilience: checkpointing so a crashed run resumes, retry budget, token and turn caps, run summary.
+5. Resilience: SQLite checkpoints, `resume`, `status`, Ctrl+C aborts sessions, run-level budget. **Done.**
 6. Dry run on this repo with the three sample specs, then tune prompts for token efficiency.

@@ -15,7 +15,14 @@
  * wave starts. In exchange the whole run is a small, deterministic state
  * machine that is easy to reason about, test and resume.
  */
-import { Annotation, END, Send, START, StateGraph } from "@langchain/langgraph";
+import {
+  Annotation,
+  END,
+  Send,
+  START,
+  StateGraph,
+  type BaseCheckpointSaver,
+} from "@langchain/langgraph";
 import type { Coder, Integrator } from "./agents/types.js";
 import type { OrchestratorConfig } from "./config.js";
 import { addPhaseMetrics } from "./metrics.js";
@@ -96,7 +103,22 @@ const CoderInput = Annotation.Root({
   pr: Annotation<PrRecord>,
 });
 
-export function buildGraph(deps: GraphDeps) {
+/** Estimated USD spent so far across every PR and phase. */
+export function totalCost(prs: Record<string, PrRecord>): number {
+  return Object.values(prs).reduce(
+    (n, p) => n + (p.coding?.costUsd ?? 0) + (p.integration?.costUsd ?? 0),
+    0,
+  );
+}
+
+/**
+ * Build the graph. With a checkpointer, LangGraph saves the state after every
+ * superstep under the run's thread id, which is what `resume` reads.
+ */
+export function buildGraph(
+  deps: GraphDeps,
+  checkpointer?: BaseCheckpointSaver,
+) {
   const { config, coder, integrator } = deps;
   const emit = deps.emit ?? (() => {});
 
@@ -105,13 +127,20 @@ export function buildGraph(deps: GraphDeps) {
     for (const pr of Object.values(blocked)) {
       emit("pr:blocked", { prId: pr.id, error: pr.error });
     }
-    const wave = pickWave({ ...state.prs, ...blocked }, config.coders.count);
+    const spent = totalCost(state.prs);
+    const overBudget =
+      config.maxRunBudgetUsd !== undefined && spent >= config.maxRunBudgetUsd;
+    const wave = overBudget
+      ? []
+      : pickWave({ ...state.prs, ...blocked }, config.coders.count);
     const updates: Record<string, PrRecord> = { ...blocked };
     for (const pr of wave) {
       updates[pr.id] = { ...pr, status: "coding", attempts: pr.attempts + 1 };
       emit("pr:dispatch", { prId: pr.id, attempt: pr.attempts + 1 });
     }
     if (wave.length) emit("wave", { ids: wave.map((p) => p.id) });
+    else if (overBudget)
+      emit("run:budget-exceeded", { spent, budget: config.maxRunBudgetUsd });
     else emit("run:drained");
     return { prs: updates };
   };
@@ -217,7 +246,7 @@ export function buildGraph(deps: GraphDeps) {
     .addConditionalEdges("schedule", routeAfterSchedule, ["code", END])
     .addEdge("code", "integrate")
     .addEdge("integrate", "schedule")
-    .compile();
+    .compile({ checkpointer });
 }
 
 /** Send a PR back to the queue with feedback, or give up after the last allowed attempt. */

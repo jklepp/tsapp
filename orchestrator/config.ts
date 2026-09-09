@@ -80,6 +80,12 @@ export const OrchestratorConfigSchema = z.object({
   integrator: AgentSettingsSchema.prefault({}),
   /** How many times a PR may be attempted before it is marked failed. */
   maxAttemptsPerPr: z.number().int().min(1).default(2),
+  /**
+   * Stop scheduling new waves once the run's estimated spend reaches this
+   * (USD). PRs already in flight finish. Unset means no run-level cap; the
+   * per-attempt caps still apply.
+   */
+  maxRunBudgetUsd: z.number().positive().optional(),
 });
 
 export type OrchestratorConfig = z.infer<typeof OrchestratorConfigSchema>;

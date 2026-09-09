@@ -135,3 +135,18 @@ describe("graph", () => {
     expect(prs.a.error).toBe("boom");
   });
 });
+
+describe("run budget", () => {
+  it("stops scheduling new waves once maxRunBudgetUsd is reached", async () => {
+    // Stub agents cost $0.30 per PR (coding 0.25 + integration 0.05).
+    const cfg = OrchestratorConfigSchema.parse({
+      coders: { count: 1 },
+      maxRunBudgetUsd: 0.5,
+    });
+    const { prs, waves } = await run([pr("a"), pr("b"), pr("c")], {}, cfg);
+    expect(waves).toEqual([["a"], ["b"]]);
+    expect(prs.a.status).toBe("merged");
+    expect(prs.b.status).toBe("merged");
+    expect(prs.c.status).toBe("queued");
+  });
+});

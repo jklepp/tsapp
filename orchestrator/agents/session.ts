@@ -37,11 +37,23 @@ export interface SessionOutcome {
 
 export type SessionRunner = (req: SessionRequest) => Promise<SessionOutcome>;
 
+/** Every live session's controller, so Ctrl+C can stop the agent subprocesses. */
+const activeSessions = new Set<AbortController>();
+
+export function abortAllSessions(): number {
+  const n = activeSessions.size;
+  for (const c of activeSessions) c.abort();
+  activeSessions.clear();
+  return n;
+}
+
 export const runAgentSession: SessionRunner = async (req) => {
   const startedAt = new Date();
   fs.mkdirSync(path.dirname(req.logFile), { recursive: true });
   const log = fs.createWriteStream(req.logFile, { flags: "a" });
   log.write(`# session started ${startedAt.toISOString()} in ${req.cwd}\n\n`);
+  const abortController = new AbortController();
+  activeSessions.add(abortController);
 
   let result: SDKResultMessage | undefined;
   let lastText = "";
@@ -49,6 +61,7 @@ export const runAgentSession: SessionRunner = async (req) => {
     for await (const msg of query({
       prompt: req.prompt,
       options: {
+        abortController,
         cwd: req.cwd,
         model: req.settings.model,
         effort: req.settings.effort,
@@ -83,6 +96,8 @@ export const runAgentSession: SessionRunner = async (req) => {
       log.end();
       throw err;
     }
+  } finally {
+    activeSessions.delete(abortController);
   }
   if (!result) {
     log.end();

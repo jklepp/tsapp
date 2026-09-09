@@ -12,8 +12,8 @@
  *                    [--attempt N]      continue on the existing branch as attempt N
  *   npm run orch -- integrate <id>      merge pr/<id> into integration (free unless
  *                                       there is a conflict or the checks break)
- *
- * Later steps add: resume, status.
+ *   npm run orch -- resume [runId]      continue an interrupted run (latest by default)
+ *   npm run orch -- status [runId]      show a run's state from its checkpoint
  */
 import { query, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import { branchFor, createCoder } from "./agents/coder.js";
@@ -25,7 +25,15 @@ import {
   renderConsoleTable,
   summarize,
 } from "./metrics.js";
-import { newRunId, runOrchestrator } from "./run.js";
+import {
+  getRunState,
+  latestRunId,
+  newRunId,
+  resumeOrchestrator,
+  runOrchestrator,
+} from "./run.js";
+import { abortAllSessions } from "./agents/session.js";
+import type { RunSummary } from "./metrics.js";
 import {
   loadSpecs,
   previewWaves,
@@ -139,28 +147,80 @@ async function smoke(): Promise<void> {
   console.log("\n" + renderConsoleTable(summarize("smoke", prs)));
 }
 
-async function run(): Promise<void> {
+/** Real agents by default; `--stub` swaps in the free stand-ins. */
+function selectAgents() {
   const stubOpts = {
     delayMs: 300,
     failOnce: listFlag("fail-once"),
     failAlways: listFlag("fail"),
   };
-  const agents = flags.stub
-    ? { coder: stubCoder(stubOpts), integrator: stubIntegrator(stubOpts) }
-    : { coder: createCoder(), integrator: createIntegrator() };
   console.log(
     flags.stub
       ? "Stub run: no tokens will be spent."
-      : `Live run: coders on ${config.coders.model} (max $${config.coders.maxBudgetUsd}/attempt), integrator on ${config.integrator.model}.`,
+      : `Live run: coders on ${config.coders.model} (max $${config.coders.maxBudgetUsd}/attempt), integrator on ${config.integrator.model}` +
+          (config.maxRunBudgetUsd
+            ? `, run budget $${config.maxRunBudgetUsd}.`
+            : ", no run budget."),
   );
+  return flags.stub
+    ? { coder: stubCoder(stubOpts), integrator: stubIntegrator(stubOpts) }
+    : { coder: createCoder(), integrator: createIntegrator() };
+}
+
+function consoleLogger() {
   const t0 = Date.now();
-  const stamp = () => `[${((Date.now() - t0) / 1000).toFixed(1)}s]`;
-  const summary = await runOrchestrator(config, {
-    ...agents,
-    onLog: (line) => console.log(`${stamp()} ${line}`),
-  });
+  return (line: string) =>
+    console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s] ${line}`);
+}
+
+function printSummary(summary: RunSummary): void {
   console.log(`\nRun ${summary.runId} written to ${config.runsDir}`);
   console.log("\n" + renderConsoleTable(summary));
+}
+
+async function run(): Promise<void> {
+  const summary = await runOrchestrator(config, {
+    ...selectAgents(),
+    onLog: consoleLogger(),
+  });
+  printSummary(summary);
+}
+
+/** Continue an interrupted run from its last checkpoint. */
+async function resume(): Promise<void> {
+  const runId = positional[0] ?? latestRunId(config);
+  if (!runId) throw new Error(`No run with a checkpoint in ${config.runsDir}`);
+  const summary = await resumeOrchestrator(config, runId, {
+    ...selectAgents(),
+    onLog: consoleLogger(),
+  });
+  printSummary(summary);
+}
+
+/** Show a run's state from its last checkpoint. Read-only; safe during a run. */
+async function status(): Promise<void> {
+  const runId = positional[0] ?? latestRunId(config);
+  if (!runId) throw new Error(`No run with a checkpoint in ${config.runsDir}`);
+  const state = await getRunState(config, runId);
+  const counts: Record<string, number> = {};
+  for (const pr of Object.values(state.prs)) {
+    counts[pr.status] = (counts[pr.status] ?? 0) + 1;
+  }
+  console.log(`Run ${runId}`);
+  console.log(
+    `  ${Object.entries(counts)
+      .map(([s, n]) => `${n} ${s}`)
+      .join(", ")}`,
+  );
+  console.log(
+    state.next.length
+      ? `  in progress; next graph step: ${state.next.join(", ")} (resume with: npm run orch -- resume ${runId})`
+      : "  complete",
+  );
+  for (const pr of Object.values(state.prs)) {
+    if (pr.error) console.log(`  ${pr.id}: ${pr.error.split("\n")[0]}`);
+  }
+  console.log("\n" + renderConsoleTable(summarize(runId, state.prs)));
 }
 
 /** Merge one existing pr/<id> branch into integration, outside the graph. */
@@ -252,16 +312,28 @@ const commands: Record<string, () => void | Promise<void>> = {
   plan,
   smoke,
   run,
+  resume,
+  status,
   code,
   integrate,
   help: () => console.log(`Commands: ${COMMAND_LIST}`),
 };
 const COMMAND_LIST =
-  "validate | plan | smoke | run [--stub] | code <id> | integrate <id>";
+  "validate | plan | smoke | run [--stub] | resume [runId] | status [runId] | code <id> | integrate <id>";
 
 const handler = commands[command];
 if (!handler) {
   console.error(`Unknown command "${command}". Commands: ${COMMAND_LIST}`);
   process.exit(1);
 }
+
+// Ctrl+C: stop the agent subprocesses too, then leave the checkpoint for resume.
+process.on("SIGINT", () => {
+  const n = abortAllSessions();
+  console.error(
+    `\nInterrupted. Aborted ${n} agent session(s). Continue later with: npm run orch -- resume`,
+  );
+  process.exit(130);
+});
+
 await handler();
