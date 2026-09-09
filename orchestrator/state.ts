@@ -65,6 +65,11 @@ export const RunState = Annotation.Root({
     reducer: (current, update) => current.concat(update),
     default: () => [],
   }),
+  /** Merges-this-run count at the last post-merge trigger (see postmerge.ts). */
+  postMergeFiredAt: Annotation<number>({
+    reducer: (_current, update) => update,
+    default: () => 0,
+  }),
 });
 
 export type RunStateType = typeof RunState.State;

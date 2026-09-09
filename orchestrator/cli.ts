@@ -16,6 +16,7 @@
  *   npm run orch -- status [runId]      show a run's state from its checkpoint
  *   npm run orch -- watch [runId]       live view of a run from its ledger, redrawn
  *                    [--once]           each second until the run ends (or once)
+ *   npm run orch -- ci                  run postMerge.command now (e.g. trigger heavy CI)
  */
 import { query, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createCoder } from "./agents/coder.js";
@@ -30,6 +31,7 @@ import {
 } from "./metrics.js";
 import {
   alreadyMerged,
+  describeEvent,
   getRunState,
   latestRunId,
   newRunId,
@@ -40,6 +42,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { abortAllSessions } from "./agents/session.js";
 import { foldEvents, parseLedger, renderWatch } from "./watch.js";
+import { firePostMerge } from "./postmerge.js";
 import type { RunSummary } from "./metrics.js";
 import {
   loadSpecs,
@@ -215,6 +218,20 @@ async function resume(): Promise<void> {
   printSummary(summary);
 }
 
+/** Run the post-merge command now (e.g. trigger heavy CI on integration). */
+async function ci(): Promise<void> {
+  if (!config.postMerge.command) {
+    throw new Error("postMerge.command is not set in orchestrator.config.json");
+  }
+  const ok = await firePostMerge(
+    config,
+    `manual-${newRunId()}`,
+    { reason: "manual", mergedThisRun: 0 },
+    (type, data = {}) => console.log(describeEvent(type, data)),
+  );
+  if (!ok) process.exitCode = 1;
+}
+
 /** Show a run's state from its last checkpoint. Read-only; safe during a run. */
 /**
  * Live view of a run: one row per PR (state, attempt, turns, elapsed, tokens,
@@ -363,12 +380,13 @@ const commands: Record<string, () => void | Promise<void>> = {
   resume,
   status,
   watch,
+  ci,
   code,
   integrate,
   help: () => console.log(`Commands: ${COMMAND_LIST}`),
 };
 const COMMAND_LIST =
-  "validate | plan | smoke | run [--stub] | resume [runId] | status [runId] | watch [runId] | code <id> | integrate <id>";
+  "validate | plan | smoke | run [--stub] | resume [runId] | status [runId] | watch [runId] | ci | code <id> | integrate <id>";
 
 const handler = commands[command];
 if (!handler) {

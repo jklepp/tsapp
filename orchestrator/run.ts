@@ -15,10 +15,11 @@ import type { Coder, Integrator } from "./agents/types.js";
 import { SPEC_TRAILER, branchFor } from "./naming.js";
 import type { OrchestratorConfig } from "./config.js";
 import { branchExists, mergedBranches, trailerValues } from "./git.js";
-import { buildGraph, recursionLimitFor } from "./graph.js";
+import { buildGraph, countMergedThisRun, recursionLimitFor } from "./graph.js";
+import { firePostMerge } from "./postmerge.js";
 import { Ledger, summarize, writeSummary, type RunSummary } from "./metrics.js";
 import { loadSpecs, validateSpecs } from "./spec.js";
-import { initialPrRecords, type PrRecord } from "./state.js";
+import { initialPrRecords, type PrRecord, type RunStateType } from "./state.js";
 
 export interface RunOptions {
   coder: Coder;
@@ -70,6 +71,12 @@ export function describeEvent(
       return `${pr}: failed (${data.error})`;
     case "run:drained":
       return "nothing left to schedule";
+    case "ci:trigger":
+      return `post-merge command starting (${data.reason}; ${data.merged} merged this run)`;
+    case "ci:triggered":
+      return `post-merge command succeeded (${data.reason})`;
+    case "ci:trigger-failed":
+      return `post-merge command FAILED (${data.reason}): ${String(data.output ?? "").split("\n")[0]}`;
     case "run:budget-exceeded":
       return `run budget reached: $${(data.spent as number).toFixed(4)} spent of $${data.budget}; not scheduling more`;
     case "run:start": {
@@ -144,13 +151,23 @@ function setup(config: OrchestratorConfig, runId: string, opts: RunOptions) {
   return { ledger, emit, graph, close: () => checkpointer.db.close() };
 }
 
-function finish(
+async function finish(
+  config: OrchestratorConfig,
   runId: string,
-  prs: Record<string, PrRecord>,
+  final: RunStateType,
   ledger: Ledger,
   emit: (type: string, data?: Record<string, unknown>) => void,
-): RunSummary {
-  const summary = summarize(runId, prs);
+): Promise<RunSummary> {
+  const mergedThisRun = countMergedThisRun(final.prs);
+  if (config.postMerge.atRunEnd && mergedThisRun > final.postMergeFiredAt) {
+    await firePostMerge(
+      config,
+      runId,
+      { reason: "run-end", mergedThisRun },
+      emit,
+    );
+  }
+  const summary = summarize(runId, final.prs);
   writeSummary(ledger.runDir, summary);
   emit("run:end", {
     merged: summary.rows.filter((r) => r.status === "merged").length,
@@ -196,7 +213,7 @@ export async function runOrchestrator(
         signal: opts.signal,
       },
     );
-    return finish(runId, final.prs, ledger, emit);
+    return await finish(config, runId, final, ledger, emit);
   } finally {
     close();
   }
@@ -229,7 +246,7 @@ export async function resumeOrchestrator(
       recursionLimit: recursionLimitFor(prCount, config),
       signal: opts.signal,
     });
-    return finish(runId, final.prs, ledger, emit);
+    return await finish(config, runId, final, ledger, emit);
   } finally {
     close();
   }

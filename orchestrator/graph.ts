@@ -26,6 +26,7 @@ import {
 import type { Coder, Integrator } from "./agents/types.js";
 import type { OrchestratorConfig } from "./config.js";
 import { addPhaseMetrics } from "./metrics.js";
+import { dueEveryN, firePostMerge } from "./postmerge.js";
 import { RunState, type PrRecord, type RunStateType } from "./state.js";
 
 export interface GraphDeps {
@@ -102,6 +103,13 @@ const CoderInput = Annotation.Root({
   runId: Annotation<string>,
   pr: Annotation<PrRecord>,
 });
+
+/** PRs merged by this run (skipped-as-already-merged specs have attempts 0). */
+export function countMergedThisRun(prs: Record<string, PrRecord>): number {
+  return Object.values(prs).filter(
+    (p) => p.status === "merged" && p.attempts > 0,
+  ).length;
+}
 
 /** Estimated USD spent so far across every PR and phase. */
 export function totalCost(prs: Record<string, PrRecord>): number {
@@ -246,6 +254,16 @@ export function buildGraph(
         });
       }
       updates[pr.id] = updated;
+    }
+    const mergedThisRun = countMergedThisRun({ ...state.prs, ...updates });
+    if (dueEveryN(config, mergedThisRun, state.postMergeFiredAt)) {
+      await firePostMerge(
+        config,
+        state.runId,
+        { reason: "every-n", mergedThisRun },
+        emit,
+      );
+      return { prs: updates, postMergeFiredAt: mergedThisRun };
     }
     return { prs: updates };
   };
