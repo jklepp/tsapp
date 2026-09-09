@@ -1,7 +1,9 @@
 function Footer() {
+  const year = new Date().getFullYear();
+
   return (
     <footer>
-      <p>© 2026 TS App</p>
+      <p>© {year} TS App</p>
     </footer>
   );
 }
