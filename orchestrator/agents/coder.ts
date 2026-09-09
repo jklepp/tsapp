@@ -36,7 +36,11 @@ import {
 } from "../git.js";
 import { branchFor, worktreeDirFor } from "../naming.js";
 import type { PrRecord } from "../state.js";
-import { runAgentSession, type SessionRunner } from "./session.js";
+import {
+  forwardSessionEvents,
+  runAgentSession,
+  type SessionRunner,
+} from "./session.js";
 import type { Coder, CoderResult } from "./types.js";
 
 export const CODER_RULES = `
@@ -152,7 +156,9 @@ export function createCoder(deps: CoderDeps = {}): Coder {
         prompt: buildCoderPrompt(pr, specBody, config, attempt),
         systemAppend: CODER_RULES,
         settings: config.coders,
+        session: config.session,
         logFile,
+        onEvent: forwardSessionEvents(ctx, "coding"),
       });
       const { metrics } = session;
 

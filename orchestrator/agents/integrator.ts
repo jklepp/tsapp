@@ -57,7 +57,11 @@ import {
 import { SPEC_TRAILER, branchFor, integrationWorktreeDir } from "../naming.js";
 import type { PhaseMetrics, PrRecord } from "../state.js";
 import { parseBlocked } from "./coder.js";
-import { runAgentSession, type SessionRunner } from "./session.js";
+import {
+  forwardSessionEvents,
+  runAgentSession,
+  type SessionRunner,
+} from "./session.js";
 import type { Integrator, IntegratorResult } from "./types.js";
 
 export const INTEGRATOR_RULES = `
@@ -206,7 +210,9 @@ export function createIntegrator(deps: IntegratorDeps = {}): Integrator {
           prompt: conflictPrompt(pr, branch, outcome.files, specBody, config),
           systemAppend: INTEGRATOR_RULES,
           settings: config.integrator,
+          session: config.session,
           logFile,
+          onEvent: forwardSessionEvents(ctx, "integration"),
         });
         metrics = session.metrics;
         if (session.result.subtype !== "success") {
@@ -239,7 +245,9 @@ export function createIntegrator(deps: IntegratorDeps = {}): Integrator {
           prompt: fixPrompt(pr, branch, tail(check.output), config),
           systemAppend: INTEGRATOR_RULES,
           settings: config.integrator,
+          session: config.session,
           logFile,
+          onEvent: forwardSessionEvents(ctx, "integration"),
         });
         metrics = session.metrics;
         if (

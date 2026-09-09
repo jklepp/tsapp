@@ -155,7 +155,13 @@ export function buildGraph(
 
   const code = async (input: typeof CoderInput.State) => {
     const { pr, runId } = input;
-    const ctx = { config, runId, attempt: pr.attempts };
+    const ctx = {
+      config,
+      runId,
+      attempt: pr.attempts,
+      onEvent: (type: string, data: Record<string, unknown> = {}) =>
+        emit(type, { prId: pr.id, ...data }),
+    };
     let updated: PrRecord;
     try {
       const result = await coder(pr, ctx);
@@ -203,7 +209,13 @@ export function buildGraph(
       .sort(byPriority);
     const updates: Record<string, PrRecord> = {};
     for (const pr of open) {
-      const ctx = { config, runId: state.runId, attempt: pr.attempts };
+      const ctx = {
+        config,
+        runId: state.runId,
+        attempt: pr.attempts,
+        onEvent: (type: string, data: Record<string, unknown> = {}) =>
+          emit(type, { prId: pr.id, ...data }),
+      };
       emit("pr:integrating", { prId: pr.id });
       let updated: PrRecord;
       try {

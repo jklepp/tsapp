@@ -38,6 +38,14 @@ export function newRunId(now = new Date()): string {
     .replace("T", "-");
 }
 
+/** High-frequency session events: recorded in the ledger, shown only by `watch`. */
+export const LIVE_ONLY = new Set([
+  "pr:session",
+  "pr:turn",
+  "pr:usage",
+  "pr:session-end",
+]);
+
 export function describeEvent(
   type: string,
   data: Record<string, unknown>,
@@ -122,7 +130,8 @@ function setup(config: OrchestratorConfig, runId: string, opts: RunOptions) {
   const ledger = new Ledger(config.runsDir, runId);
   const emit = (type: string, data: Record<string, unknown> = {}) => {
     ledger.event(type, data);
-    opts.onLog?.(describeEvent(type, data));
+    // Per-turn progress is for `watch` and the ledger, not the run console.
+    if (!LIVE_ONLY.has(type)) opts.onLog?.(describeEvent(type, data));
   };
   const checkpointer = SqliteSaver.fromConnString(
     checkpointFile(config, runId),

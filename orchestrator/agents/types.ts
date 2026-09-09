@@ -14,6 +14,8 @@ export interface AgentContext {
   runId: string;
   /** 1 on the first try. On retries, `pr.error` carries the previous failure. */
   attempt: number;
+  /** Progress sink (ledger). Agents report per-turn activity through it. */
+  onEvent?: (type: string, data?: Record<string, unknown>) => void;
 }
 
 export type CoderResult =

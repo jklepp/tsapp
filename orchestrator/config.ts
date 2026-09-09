@@ -168,6 +168,7 @@ export const OrchestratorConfigSchema = z.object({
 export type OrchestratorConfig = z.infer<typeof OrchestratorConfigSchema>;
 export type AgentSettings = z.infer<typeof AgentSettingsSchema>;
 export type ReviewConfig = z.infer<typeof ReviewSchema>;
+export type SessionConfig = z.infer<typeof SessionSchema>;
 export type ReviewerConfig = z.infer<typeof ReviewerSchema>;
 
 export const DEFAULT_CONFIG_FILE = "orchestrator.config.json";
